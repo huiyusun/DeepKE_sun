@@ -1,4 +1,5 @@
-import openai
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
 import json
 import random
 from tqdm import tqdm
@@ -36,9 +37,14 @@ def convert_token(token):
     return token
 
 
+tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/deepseek-coder-1.3b-instruct")
+model = AutoModelForCausalLM.from_pretrained("deepseek-ai/deepseek-coder-1.3b-instruct")
+model = model.to("cuda" if torch.cuda.is_available() else "cpu")
+model.eval()
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--api_key', '-ak', type=str, required=True)
+    # parser.add_argument('--api_key', '-ak', type=str, required=True)
     parser.add_argument('--demo_path', '-dp', type=str, required=True, help="The directory of demonstration data.")
     parser.add_argument('--output_dir', type=str, required=True, help="The output directory of generated data.")
     parser.add_argument('--dataset', type=str, required=True, choices=["tacred", "tacrev", "retacred"])
@@ -46,8 +52,6 @@ if __name__ == "__main__":
     parser.add_argument('--timestamp_output', action='store_true',
                         help="If set, generate a new output file with a timestamp")
     args = parser.parse_args()
-
-    openai.api_key = args.api_key
 
     input_file = args.demo_path
     datasetname = args.dataset
@@ -97,13 +101,10 @@ if __name__ == "__main__":
                          v[i]['obj_type'] + ".\n"
                 prompt = prompt + sample
             prompt = prompt + "Generate more samples like above for the relation '" + k + "'."
-            response = openai.Completion.create(
-                model="gpt-3.5-turbo-instruct",
-                prompt=prompt,
-                temperature=1,
-                max_tokens=3500
-            )
-            res = response['choices'][0]['text'].split('\n')
+            inputs = tokenizer(prompt, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
+            outputs = model.generate(**inputs, max_new_tokens=512, do_sample=True, temperature=1.0)
+            generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            res = generated_text.split('\n')
             for line in res:
                 if len(line) == 0:
                     continue

@@ -45,7 +45,7 @@ def f1_score(true, pred_result, rel2id):
             if golden != neg:
                 correct_positive += 1
         if golden != neg:
-            gold_positive +=1
+            gold_positive += 1
         if pred_result[i] != neg:
             pred_positive += 1
     acc = float(correct) / float(total)
@@ -68,18 +68,22 @@ def f1_score(true, pred_result, rel2id):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--api_key', '-ak', type=str, required=True)
-    parser.add_argument('--train_path', '-tp', type=str, required=True, help="The path of training / demonstration data.")
+    parser.add_argument('--train_path', '-tp', type=str, required=True,
+                        help="The path of training / demonstration data.")
     parser.add_argument('--test_path', '-ttp', type=str, required=True, help="The path of test data.")
-    parser.add_argument('--output_success', '-os', type=str, required=True, help="The output directory of successful ICL samples.")
-    parser.add_argument('--output_nores', '-on', type=str, required=True, help="The output directory of failed ICL samples.")
-    parser.add_argument('--prompt', type=str, required=True, choices=["text", "text_schema", "instruct", "instruct_schema"])
+    parser.add_argument('--output_success', '-os', type=str, required=True,
+                        help="The output directory of successful ICL samples.")
+    parser.add_argument('--output_nores', '-on', type=str, required=True,
+                        help="The output directory of failed ICL samples.")
+    parser.add_argument('--prompt', type=str, required=True,
+                        choices=["text", "text_schema", "instruct", "instruct_schema"])
     parser.add_argument('--k', type=int, default=1, help="k-shot demonstrations")
     args = parser.parse_args()
-    
+
     openai.api_key = args.api_key
 
     # Train / Demostration Set
-    with open(args.train_path,'r') as f:
+    with open(args.train_path, 'r') as f:
         train = json.load(f)
     label_list = {}
     for line in train:
@@ -88,7 +92,6 @@ if __name__ == "__main__":
             label_list[rel] = [line]
         else:
             label_list[rel].append(line)
-
 
     # Relations
     rels = list(label_list.keys())
@@ -99,20 +102,22 @@ if __name__ == "__main__":
     # Label words
     rel2labelword = {}
     for rel in rels:
-        rel2labelword[rel] = rel.lower().replace("_"," ").replace("-", " ").replace("per", "person").replace("org", "organization").replace("stateor", "state or ")
+        rel2labelword[rel] = rel.lower().replace("_", " ").replace("-", " ").replace("per", "person").replace("org",
+                                                                                                              "organization").replace(
+            "stateor", "state or ")
     labelword2rel = {}
-    for k,v in rel2labelword.items():
+    for k, v in rel2labelword.items():
         labelword2rel[v] = k
 
     # Test Set
-    with open(args.test_path,'r') as f:
+    with open(args.test_path, 'r') as f:
         test = json.load(f)
 
     res = []
     true = []
     nores = []
     success = []
-    with open(os.path.join(args.output_success, "os.json"),"w") as f:
+    with open(os.path.join(args.output_success, "os.json"), "w") as f:
         for input in tqdm(test):
             random.shuffle(rels)
             try:
@@ -120,19 +125,19 @@ if __name__ == "__main__":
                     prompt = "There are candidate relations: " + ', '.join(labelword2rel.keys()) + ".\n"
                 else:
                     prompt = "Given a context, a pair of head and tail entities in the context, decide the relationship between the head and tail entities from candidate relations: " + \
-                     ', '.join(labelword2rel.keys()) + ".\n"
+                             ', '.join(labelword2rel.keys()) + ".\n"
                 for rel in rels:
                     random.shuffle(label_list[rel])
                     kshot = label_list[rel][:args.k]
                     for data in kshot:
                         ss, se = data['subj_start'], data['subj_end']
-                        head = ' '.join(data['token'][ss:se+1])
-                        headtype = data['subj_type'].lower().replace('_',' ')
+                        head = ' '.join(data['token'][ss:se + 1])
+                        headtype = data['subj_type'].lower().replace('_', ' ')
                         if headtype == "misc":
                             headtype = "miscellaneous"
                         os, oe = data['obj_start'], data['obj_end']
-                        tail = ' '.join(data['token'][os:oe+1])
-                        tailtype = data['obj_type'].lower().replace('_',' ')
+                        tail = ' '.join(data['token'][os:oe + 1])
+                        tailtype = data['obj_type'].lower().replace('_', ' ')
                         if tailtype == "misc":
                             tailtype = "miscellaneous"
                         sentence = ' '.join([convert_token(token) for token in data['token']])
@@ -142,15 +147,15 @@ if __name__ == "__main__":
                         else:
                             prompt += "Context: " + sentence + " The relation between '" + head + "' and '" + tail + "' in the context is " + relation + ".\n"
                         # prompt += " The relation between '" + head + "' and '" + tail + "' in the context '" + sentence + "' is " + relation + ".\n"
-                        
+
                 tss, tse = input['subj_start'], input['subj_end']
-                testhead = ' '.join(input['token'][tss:tse+1])
-                testheadtype = input['subj_type'].lower().replace('_',' ')
+                testhead = ' '.join(input['token'][tss:tse + 1])
+                testheadtype = input['subj_type'].lower().replace('_', ' ')
                 if testheadtype == "misc":
                     testheadtype = "miscellaneous"
                 tos, toe = input['obj_start'], input['obj_end']
-                testtail = ' '.join(input['token'][tos:toe+1])
-                testtailtype = input['obj_type'].lower().replace('_',' ')
+                testtail = ' '.join(input['token'][tos:toe + 1])
+                testtailtype = input['obj_type'].lower().replace('_', ' ')
                 if testtailtype == "misc":
                     testtailtype = "miscellaneous"
                 testsen = ' '.join(input['token'])
@@ -161,8 +166,8 @@ if __name__ == "__main__":
                     # prompt += " The relation between '" + testhead + "' and '" + testtail + "' in the context '" + testsen + "' is "
                 # print(prompt)
                 response = openai.Completion.create(
-                    model="text-davinci-003",
-                    prompt = prompt,
+                    model="	gpt-3.5-turbo-instruct",
+                    prompt=prompt,
                     temperature=0,
                     max_tokens=128
                 )
@@ -213,6 +218,6 @@ if __name__ == "__main__":
                 nores.append(input)
                 time.sleep(30)
 
-    if len(nores)!=0:
-        json.dump(nores, open(os.path.join(args.output_nores, "no.json"),'w'))
+    if len(nores) != 0:
+        json.dump(nores, open(os.path.join(args.output_nores, "no.json"), 'w'))
     print(f1_score(true, res, rel2id))
