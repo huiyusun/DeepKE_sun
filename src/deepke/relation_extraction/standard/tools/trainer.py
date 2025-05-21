@@ -29,7 +29,7 @@ def train(epoch, model, dataloader, optimizer, criterion, device, writer, cfg):
     for batch_idx, (x, y) in enumerate(dataloader, 1):
         for key, value in x.items():
             x[key] = value.to(device)
-            
+
         y = y.to(device)
 
         optimizer.zero_grad()

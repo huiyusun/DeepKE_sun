@@ -1,4 +1,5 @@
-import openai
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import torch
 import json
 import random
 import time
@@ -48,7 +49,7 @@ def f1_score(true, pred_result, rel2id):
             gold_positive += 1
         if pred_result[i] != neg:
             pred_positive += 1
-    acc = float(correct) / float(total)
+    acc = float(correct) / float(total) if total != 0 else 0
     try:
         micro_p = float(correct_positive) / float(pred_positive)
     except:
@@ -67,7 +68,7 @@ def f1_score(true, pred_result, rel2id):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--api_key', '-ak', type=str, required=True)
+    # parser.add_argument('--api_key', '-ak', type=str, required=True)
     parser.add_argument('--train_path', '-tp', type=str, required=True,
                         help="The path of training / demonstration data.")
     parser.add_argument('--test_path', '-ttp', type=str, required=True, help="The path of test data.")
@@ -80,7 +81,18 @@ if __name__ == "__main__":
     parser.add_argument('--k', type=int, default=1, help="k-shot demonstrations")
     args = parser.parse_args()
 
-    openai.api_key = args.api_key
+    # openai.api_key = args.api_key
+    # Load FLAN-T5-large model and tokenizer
+    model_id = "google/flan-t5-large"
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_id)
+    model.eval()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
+
+    # set limits
+    max_test_limit = 10
+    max_token_limit = 440
 
     # Train / Demostration Set
     with open(args.train_path, 'r') as f:
@@ -111,7 +123,8 @@ if __name__ == "__main__":
 
     # Test Set
     with open(args.test_path, 'r') as f:
-        test = json.load(f)
+        all_test_data = json.load(f)
+    test = random.sample(all_test_data, min(max_test_limit, len(all_test_data)))
 
     res = []
     true = []
@@ -124,8 +137,13 @@ if __name__ == "__main__":
                 if "text" in args.prompt:
                     prompt = "There are candidate relations: " + ', '.join(labelword2rel.keys()) + ".\n"
                 else:
-                    prompt = "Given a context, a pair of head and tail entities in the context, decide the relationship between the head and tail entities from candidate relations: " + \
-                             ', '.join(labelword2rel.keys()) + ".\n"
+                    prompt = (
+                            "Given a context, a pair of head and tail entities in the context, decide the relationship between the head and tail entities, "
+                            "and select the most appropriate relation label from the list of candidate relations: " +
+                            '; '.join(
+                                labelword2rel.keys()) + "\n" + "Choose only one relation label and write it exactly as shown above.\n"
+                    )
+
                 for rel in rels:
                     random.shuffle(label_list[rel])
                     kshot = label_list[rel][:args.k]
@@ -135,8 +153,8 @@ if __name__ == "__main__":
                         headtype = data['subj_type'].lower().replace('_', ' ')
                         if headtype == "misc":
                             headtype = "miscellaneous"
-                        os, oe = data['obj_start'], data['obj_end']
-                        tail = ' '.join(data['token'][os:oe + 1])
+                        oS, oe = data['obj_start'], data['obj_end']
+                        tail = ' '.join(data['token'][oS:oe + 1])
                         tailtype = data['obj_type'].lower().replace('_', ' ')
                         if tailtype == "misc":
                             tailtype = "miscellaneous"
@@ -147,6 +165,12 @@ if __name__ == "__main__":
                         else:
                             prompt += "Context: " + sentence + " The relation between '" + head + "' and '" + tail + "' in the context is " + relation + ".\n"
                         # prompt += " The relation between '" + head + "' and '" + tail + "' in the context '" + sentence + "' is " + relation + ".\n"
+
+                        # Check token length
+                        input_check = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True)
+                        if input_check["input_ids"].shape[1] > max_token_limit:
+                            prompt = prompt.rsplit("Context:", 1)[0]  # Remove last added sample
+                            break
 
                 tss, tse = input['subj_start'], input['subj_end']
                 testhead = ' '.join(input['token'][tss:tse + 1])
@@ -164,14 +188,16 @@ if __name__ == "__main__":
                 else:
                     prompt += "Context: " + testsen + " The relation between '" + testhead + "' and '" + testtail + "' in the context is "
                     # prompt += " The relation between '" + testhead + "' and '" + testtail + "' in the context '" + testsen + "' is "
-                # print(prompt)
-                response = openai.Completion.create(
-                    model="	gpt-3.5-turbo-instruct",
-                    prompt=prompt,
-                    temperature=0,
-                    max_tokens=128
-                )
-                resrel = response['choices'][0]['text'].strip().split('.')[0].lower()
+                print("🧾 INPUT CONTEXT:", prompt)
+
+                # model inference output
+                inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True).to(device)
+                with torch.inference_mode():
+                    outputs = model.generate(**inputs, max_new_tokens=64)
+                decoded = tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+                print("🔹 MODEL OUTPUT:", decoded, "✅ TRUE LABEL:", input['relation'])
+                resrel = decoded.split('.')[0].lower()
+
                 if resrel in labelword2rel:
                     truerel = rel2id[input['relation']]
                     predictrel = rel2id[labelword2rel[resrel]]
@@ -212,8 +238,8 @@ if __name__ == "__main__":
                     input['pr'] = resrel
                     nores.append(input)
             except Exception as e:
-                print(e)
-                if e._message == 'You exceeded your current quota, please check your plan and billing details.':
+                print("ERROR:", e)
+                if "quota" in str(e).lower():
                     break
                 nores.append(input)
                 time.sleep(30)

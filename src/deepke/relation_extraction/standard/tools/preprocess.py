@@ -2,10 +2,11 @@ import os
 import logging
 from collections import OrderedDict
 from typing import List, Dict
-from transformers import BertTokenizer
+from transformers import AutoTokenizer
 from .serializer import Serializer
 from .vocab import Vocab
 import sys
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
 from utils import save_pkl, load_csv
 
@@ -21,6 +22,8 @@ __all__ = [
     "_handle_relation_data",
     "preprocess"
 ]
+
+
 def _handle_pos_limit(pos: List[int], limit: int) -> List[int]:
     """
     处理句子长度，设定句长限制
@@ -42,7 +45,7 @@ def _handle_pos_limit(pos: List[int], limit: int) -> List[int]:
 def _add_pos_seq(train_data: List[Dict], cfg):
     """
     增加位置序列
-    Args : 
+    Args :
         train_data (List[Dict]) : 数据集合
         cfg : 配置文件
     """
@@ -60,14 +63,14 @@ def _add_pos_seq(train_data: List[Dict], cfg):
             if cfg.use_pcnn:
                 # 当句子无法分隔成三段时，无法使用PCNN
                 # 比如： [head, ... tail] or [... head, tail, ...] 无法使用统一方式 mask 分段
-                d['entities_pos'] = [1] * (entities_idx[0] + 1) + [2] * (entities_idx[1] - entities_idx[0] - 1) +\
+                d['entities_pos'] = [1] * (entities_idx[0] + 1) + [2] * (entities_idx[1] - entities_idx[0] - 1) + \
                                     [3] * (d['seq_len'] - entities_idx[1])
 
 
 def _convert_tokens_into_index(data: List[Dict], vocab):
     """
     将tokens转换成index值
-    Args : 
+    Args :
         data (List[Dict]) : 数据集合
         vocab (Class) : 词汇表
     """
@@ -82,7 +85,7 @@ def _convert_tokens_into_index(data: List[Dict], vocab):
 def _serialize_sentence(data: List[Dict], serial, cfg):
     """
     将句子分词
-    Args : 
+    Args :
         data (List[Dict]) : 数据集合
         serial (Class): Serializer类
         cfg : 配置文件
@@ -112,12 +115,12 @@ def _serialize_sentence(data: List[Dict], serial, cfg):
 def _lm_serialize(data: List[Dict], cfg):
     """
     lm模型分词
-    Args : 
+    Args :
         data (List[Dict]) : 数据集合
         cfg : 配置文件
     """
-    logger.info('use bert tokenizer...')
-    tokenizer = BertTokenizer.from_pretrained(cfg.lm_file)
+    logger.info(f'use tokenizer for model: {cfg.lm_name} ...')
+    tokenizer = AutoTokenizer.from_pretrained(cfg.lm_file, trust_remote_code=True)
     for d in data:
         sent = d['sentence'].strip()
         sent = sent.replace(d['head'], d['head_type'], 1).replace(d['tail'], d['tail_type'], 1)
@@ -158,6 +161,7 @@ def _handle_relation_data(relation_data: List[Dict]) -> Dict:
 
     return rels
 
+
 def _clean_data(data):
     """
     清洗数据，去除一些头尾实体不存在的句子
@@ -175,14 +179,15 @@ def _clean_data(data):
             clean_data.append(d)
     return clean_data
 
+
 def preprocess(cfg):
     """
     数据预处理阶段
     """
     logger.info('===== start preprocess data =====')
-    train_fp = os.path.join(cfg.cwd, cfg.data_path, 'train.csv')
-    valid_fp = os.path.join(cfg.cwd, cfg.data_path, 'valid.csv')
-    test_fp = os.path.join(cfg.cwd, cfg.data_path, 'test.csv')
+    train_fp = os.path.join(cfg.cwd, cfg.data_path, 'train.json')
+    valid_fp = os.path.join(cfg.cwd, cfg.data_path, 'dev.json')
+    test_fp = os.path.join(cfg.cwd, cfg.data_path, 'test.json')
     relation_fp = os.path.join(cfg.cwd, cfg.data_path, 'relation.csv')
 
     logger.info('load raw files...')
@@ -239,7 +244,7 @@ def preprocess(cfg):
     logger.info('save data for backup...')
     os.makedirs(os.path.join(cfg.cwd, cfg.out_path), exist_ok=True)
     train_save_fp = os.path.join(cfg.cwd, cfg.out_path, 'train.pkl')
-    valid_save_fp = os.path.join(cfg.cwd, cfg.out_path, 'valid.pkl')
+    valid_save_fp = os.path.join(cfg.cwd, cfg.out_path, 'dev.pkl')
     test_save_fp = os.path.join(cfg.cwd, cfg.out_path, 'test.pkl')
     save_pkl(train_data, train_save_fp)
     save_pkl(valid_data, valid_save_fp)
@@ -254,6 +259,3 @@ def preprocess(cfg):
             f.write(os.linesep.join(vocab.word2idx.keys()))
 
     logger.info('===== end preprocess data =====')
-
-
-

@@ -1,10 +1,12 @@
-import openai
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
 import json
 import random
 from tqdm import tqdm
 import argparse
 import os
 from datetime import datetime
+from collections import Counter
 
 entity_types = {
     "tacrev": ['URL', 'LOCATION', 'IDEOLOGY', 'CRIMINAL CHARGE', 'TITLE', 'STATE OR PROVINCE', 'DATE', 'PERSON',
@@ -21,24 +23,29 @@ entity_types = {
 
 def convert_token(token):
     """ Convert PTB tokens to normal tokens """
-    if token.lower() == '-lrb-':
+    if (token.lower() == '-lrb-'):
         return '('
-    elif token.lower() == '-rrb-':
+    elif (token.lower() == '-rrb-'):
         return ')'
-    elif token.lower() == '-lsb-':
+    elif (token.lower() == '-lsb-'):
         return '['
-    elif token.lower() == '-rsb-':
+    elif (token.lower() == '-rsb-'):
         return ']'
-    elif token.lower() == '-lcb-':
+    elif (token.lower() == '-lcb-'):
         return '{'
-    elif token.lower() == '-rcb-':
+    elif (token.lower() == '-rcb-'):
         return '}'
     return token
 
 
+tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/deepseek-coder-1.3b-instruct")
+model = AutoModelForCausalLM.from_pretrained("deepseek-ai/deepseek-coder-1.3b-instruct")
+model = model.to("cuda" if torch.cuda.is_available() else "cpu")
+model.eval()
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--api_key', '-ak', type=str, required=True)
+    # parser.add_argument('--api_key', '-ak', type=str, required=True)
     parser.add_argument('--demo_path', '-dp', type=str, required=True, help="The directory of demonstration data.")
     parser.add_argument('--output_dir', type=str, required=True, help="The output directory of generated data.")
     parser.add_argument('--dataset', type=str, required=True, choices=["tacred", "tacrev", "retacred"])
@@ -46,8 +53,6 @@ if __name__ == "__main__":
     parser.add_argument('--timestamp_output', action='store_true',
                         help="If set, generate a new output file with a timestamp")
     args = parser.parse_args()
-
-    openai.api_key = args.api_key
 
     input_file = args.demo_path
     datasetname = args.dataset
@@ -58,17 +63,32 @@ if __name__ == "__main__":
     else:
         output_file = os.path.join(args.output_dir, "generated.json")
 
+    # load dataß
     data = []
-    label_list = {}
     with open(input_file, 'r') as f:
         data = json.load(f)
     random.shuffle(data)
+
+    # count low frequency relations
+    relation_counts = Counter([line['relation'] for line in data])
+    # Set your frequency threshold
+    low_freq_threshold = 50  # you can adjust this
+    low_freq_rels = [rel for rel, count in relation_counts.items() if count <= low_freq_threshold]
+    print(f"Low-frequency relations (≤{low_freq_threshold}):", low_freq_rels)
+
+    # when building the label_list, only keep those in low_freq_rels
+    label_list = {}
     for line in data:
         rel = line['relation']
+        if rel not in low_freq_rels:
+            continue  # skip high-frequency relations
         if rel not in label_list:
             label_list[rel] = [line]
         else:
             label_list[rel].append(line)
+
+    with open(os.path.join(args.output_dir, "relation_frequencies.json"), "w") as freq_out:
+        json.dump(dict(relation_counts), freq_out, indent=2)
 
     '''
     One sample in relation extraction datasets consists of a relation, a context, a pair of head and tail entities in the context and their entity types. 
@@ -83,10 +103,16 @@ if __name__ == "__main__":
 
     with open(output_file, 'a') as f:
         for k, v in tqdm(label_list.items()):
-            prompt = "One sample in relation extraction datasets consists of a relation, a context, a pair of head and tail entities in the context and their entity types. The head entity has the relation with the tail entity and entities are pre-categorized as the following types: " + \
-                     (', '.join(entity_types[datasetname])) + \
-                     ". Here are some samples for relation '" + k + "':\n"
-            for i in range(args.k):
+            k_shot = min(args.k, len(v))  # ensure no index error
+            prompt = (
+                    "You are given examples from a relation extraction dataset. "
+                    "Each sample includes: Relation, Context, Head Entity (with type), and Tail Entity (with type). "
+                    "The Head Entity is related to the Tail Entity by the Relation. "
+                    "Entity types include: " + ', '.join(entity_types[datasetname]) + ".\n"
+                                                                                      f"Here are {k_shot} examples for the relation '{k}':\n"
+            )
+
+            for i in range(k_shot):
                 sample = "Relation: " + k + ". Context: " + ' '.join(
                     [convert_token(token) for token in v[i]['token']]) + ' ' + "Head Entity: " + ' '.join(
                     [convert_token(token) for token in
@@ -97,13 +123,10 @@ if __name__ == "__main__":
                          v[i]['obj_type'] + ".\n"
                 prompt = prompt + sample
             prompt = prompt + "Generate more samples like above for the relation '" + k + "'."
-            response = openai.Completion.create(
-                model="gpt-3.5-turbo-instruct",
-                prompt=prompt,
-                temperature=1,
-                max_tokens=3500
-            )
-            res = response['choices'][0]['text'].split('\n')
+            inputs = tokenizer(prompt, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
+            outputs = model.generate(**inputs, max_new_tokens=512, do_sample=True, temperature=1.0)
+            generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            res = generated_text.split('\n')
             for line in res:
                 if len(line) == 0:
                     continue
@@ -206,6 +229,7 @@ if __name__ == "__main__":
                     DAdata['obj'] = truetail
                     DAdata['obj_start'], DAdata['obj_end'] = tpos1, tpos2
                     DAdata['relation'] = k
+                    DAdata['source'] = "generated"
                     f.writelines(json.dumps(DAdata, ensure_ascii=False))
                     f.write('\n')
                 except:

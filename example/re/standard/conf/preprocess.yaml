@@ -3,7 +3,7 @@
 preprocess: True
 
 # 原始数据存放位置
-data_path: 'data/origin'
+data_path: 'data/TACRED'
 
 # 预处理后存放文件位置
 out_path: 'data/out'

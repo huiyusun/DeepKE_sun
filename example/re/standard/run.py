@@ -8,24 +8,29 @@ from hydra import utils
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from omegaconf import OmegaConf
 # self
 import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
+
+# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
+# sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
 import deepke.relation_extraction.standard.models as models
-from deepke.relation_extraction.standard.tools import preprocess , CustomDataset, collate_fn ,train, validate
+from deepke.relation_extraction.standard.tools import preprocess, CustomDataset, collate_fn, train, validate
 from deepke.relation_extraction.standard.utils import manual_seed, load_pkl
 
 import wandb
 
 logger = logging.getLogger(__name__)
 
+
+# @hydra.main(config_path="conf", config_name="config.yaml")
 @hydra.main(config_path="conf/config.yaml")
 def main(cfg):
     cwd = utils.get_original_cwd()
     # cwd = cwd[0:-5]
     cfg.cwd = cwd
     cfg.pos_size = 2 * cfg.pos_limit + 2
-    logger.info(f'\n{cfg.pretty()}')
+    logger.info(f'\n{OmegaConf.to_yaml(cfg)}')
 
     if cfg.use_wandb:
         wandb.init(project="DeepKE_RE_Standard", name=cfg.model_name)
@@ -59,9 +64,9 @@ def main(cfg):
     # 如果不修改预处理的过程，这一步最好注释掉，不用每次运行都预处理数据一次
     if cfg.preprocess:
         preprocess(cfg)
-    
+
     train_data_path = os.path.join(cfg.cwd, cfg.out_path, 'train.pkl')
-    valid_data_path = os.path.join(cfg.cwd, cfg.out_path, 'valid.pkl')
+    valid_data_path = os.path.join(cfg.cwd, cfg.out_path, 'dev.pkl')
     test_data_path = os.path.join(cfg.cwd, cfg.out_path, 'test.pkl')
     vocab_path = os.path.join(cfg.cwd, cfg.out_path, 'vocab.pkl')
 
@@ -75,7 +80,7 @@ def main(cfg):
     train_dataset = CustomDataset(train_data_path)
     valid_dataset = CustomDataset(valid_data_path)
     test_dataset = CustomDataset(test_data_path)
-    
+
     train_dataloader = DataLoader(train_dataset, batch_size=cfg.batch_size, shuffle=True, collate_fn=collate_fn(cfg))
     valid_dataloader = DataLoader(valid_dataset, batch_size=cfg.batch_size, shuffle=True, collate_fn=collate_fn(cfg))
     test_dataloader = DataLoader(test_dataset, batch_size=cfg.batch_size, shuffle=True, collate_fn=collate_fn(cfg))
@@ -84,9 +89,9 @@ def main(cfg):
     if MULTI_GPU:
         model = torch.nn.DataParallel(model, device_ids=device_ids)
         device = device_ids[0]
-        
+
     model.to(device)
-    
+
     if cfg.use_wandb:
         wandb.watch(model, log="all")
     logger.info(f'\n {model}')
@@ -122,8 +127,8 @@ def main(cfg):
 
         if cfg.use_wandb:
             wandb.log({
-                "train_loss":train_loss,
-                "valid_loss":valid_loss
+                "train_loss": train_loss,
+                "valid_loss": valid_loss
             })
 
         if best_f1 < valid_f1:
@@ -168,16 +173,15 @@ def main(cfg):
     logger.info('=====end of training====')
     logger.info('')
     logger.info('=====start test performance====')
-    _ , test_loss = validate(-1, model, test_dataloader, criterion, device, cfg)
+    _, test_loss = validate(-1, model, test_dataloader, criterion, device, cfg)
 
     if cfg.use_wandb:
         wandb.log({
-            "test_loss":test_loss,
+            "test_loss": test_loss,
         })
-    
+
     logger.info('=====ending====')
 
 
 if __name__ == '__main__':
     main()
-   

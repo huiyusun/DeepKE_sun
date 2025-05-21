@@ -6,6 +6,7 @@ from tqdm import tqdm
 import argparse
 import os
 from datetime import datetime
+from huggingface_hub import login
 
 entity_types = {
     "tacrev": ['URL', 'LOCATION', 'IDEOLOGY', 'CRIMINAL CHARGE', 'TITLE', 'STATE OR PROVINCE', 'DATE', 'PERSON',
@@ -22,25 +23,20 @@ entity_types = {
 
 def convert_token(token):
     """ Convert PTB tokens to normal tokens """
-    if (token.lower() == '-lrb-'):
+    if token.lower() == '-lrb-':
         return '('
-    elif (token.lower() == '-rrb-'):
+    elif token.lower() == '-rrb-':
         return ')'
-    elif (token.lower() == '-lsb-'):
+    elif token.lower() == '-lsb-':
         return '['
-    elif (token.lower() == '-rsb-'):
+    elif token.lower() == '-rsb-':
         return ']'
-    elif (token.lower() == '-lcb-'):
+    elif token.lower() == '-lcb-':
         return '{'
-    elif (token.lower() == '-rcb-'):
+    elif token.lower() == '-rcb-':
         return '}'
     return token
 
-
-tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/deepseek-coder-1.3b-instruct")
-model = AutoModelForCausalLM.from_pretrained("deepseek-ai/deepseek-coder-1.3b-instruct")
-model = model.to("cuda" if torch.cuda.is_available() else "cpu")
-model.eval()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -52,6 +48,14 @@ if __name__ == "__main__":
     parser.add_argument('--timestamp_output', action='store_true',
                         help="If set, generate a new output file with a timestamp")
     args = parser.parse_args()
+
+    # openai.api_key = args.api_key
+    model_id = "deepseek-ai/deepseek-coder-1.3b-instruct"
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True)
+    model.eval()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
 
     input_file = args.demo_path
     datasetname = args.dataset
@@ -101,10 +105,17 @@ if __name__ == "__main__":
                          v[i]['obj_type'] + ".\n"
                 prompt = prompt + sample
             prompt = prompt + "Generate more samples like above for the relation '" + k + "'."
-            inputs = tokenizer(prompt, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
-            outputs = model.generate(**inputs, max_new_tokens=512, do_sample=True, temperature=1.0)
-            generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-            res = generated_text.split('\n')
+
+            # model response
+            # print("Input prompt:", prompt)
+            inputs = tokenizer(prompt, return_tensors="pt").to(device)
+            with torch.inference_mode():
+                outputs = model.generate(**inputs, max_new_tokens=3500, temperature=1.0,
+                                         pad_token_id=tokenizer.eos_token_id)
+            decoded = tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+            # print("Generated output:", decoded)
+            res = decoded.split('\n')
+
             for line in res:
                 if len(line) == 0:
                     continue

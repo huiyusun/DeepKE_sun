@@ -1,9 +1,8 @@
 model_name: lm
 
 # 当使用预训练语言模型时，该预训练的模型存放位置
-# lm_name = 'bert-base-chinese'  # download usage
-#lm_file: 'pretrained' 请在此处填写模型的绝对路径  Please fill in the absolute path of the model here.
-lm_file: 'bert-base-chinese'
+lm_name: 'deepseek-coder-1.3b-instruct'  # download usage
+lm_file: '/users/huiyu/.cache/huggingface/hub/models--deepseek-ai--deepseek-coder-1.3b-instruct'
 
 # transformer 层数，初始 base bert 为12层
 # 但是数据量较小时调低些反而收敛更快效果更好
