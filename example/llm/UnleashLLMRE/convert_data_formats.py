@@ -155,9 +155,9 @@ if __name__ == '__main__':
     icl_prompts_path = "./data/train_prompts.json"
 
     # convert_generated_to_tacred(generated_path, tac_gen_path)  # generate new training data
-    merge_datasets(tac_orig_path, tac_gen_path, merged_path, orig_limit=4500, gen_limit=1500)
+    # merge_datasets(tac_orig_path, tac_gen_path, merged_path, orig_limit=4500, gen_limit=1500)
 
-    # count_relation_types(tac_orig_path)
-    # extract_relations_to_csv(original_path, relations_out_path)
+    # count_relation_types(tac_gen_path)
+    # extract_relations_to_csv(tac_gen_path, relations_out_path)
 
     # convert_tacred_to_icl_prompts(tac_gen_path, icl_prompts_path, format_type="text")

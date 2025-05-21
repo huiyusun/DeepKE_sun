@@ -107,13 +107,13 @@ if __name__ == "__main__":
             prompt = prompt + "Generate more samples like above for the relation '" + k + "'."
 
             # model response
-            # print("Input prompt:", prompt)
+            # print("Input prompt:\n", prompt)
             inputs = tokenizer(prompt, return_tensors="pt").to(device)
             with torch.inference_mode():
                 outputs = model.generate(**inputs, max_new_tokens=3500, temperature=1.0,
                                          pad_token_id=tokenizer.eos_token_id)
             decoded = tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
-            # print("Generated output:", decoded)
+            # print("Generated output:\n", decoded)
             res = decoded.split('\n')
 
             for line in res:
