@@ -8,8 +8,9 @@ nlp = spacy.load("en_core_web_sm")
 
 
 # convert the generated DA output files from UnleaseLLMRE to the data format of the original TACRED, TACREV or Re-TACRED
-def convert_generated_to_tacred(input_path, output_path):
+def convert_generated_to_tacred(input_path, output_path, model):
     print("generating new data examples:")
+    doc = os.path.basename(input_path).replace('.json', '')
     converted = []
     with open(input_path) as fin:
         for i, line in enumerate(fin):
@@ -29,13 +30,14 @@ def convert_generated_to_tacred(input_path, output_path):
 
                 converted.append({
                     "id": uuid.uuid4().hex[:20],
+                    "modelid": model,
                     "relation": data["relation"],
                     "token": tokens,
                     "subj_start": subj_start,
                     "subj_end": subj_end,
-                    "subj_type": data["subj_type"],
                     "obj_start": obj_start,
                     "obj_end": obj_end,
+                    "subj_type": data["subj_type"],
                     "obj_type": data["obj_type"]
                 })
 
@@ -147,14 +149,14 @@ def convert_tacred_to_icl_prompts(json_path, output_path, format_type="text"):
 
 
 if __name__ == '__main__':
-    generated_path = "./generated/generated_deepseek-coder-1.3b-instruct_tacred.json"
-    tac_gen_path = "./data/train_new.json"  # convert to TACRED, TACREV, or Re-TACRED dataset format
+    generated_path = "./generated/generated_gpt4o_tacred_skewed_dist.json"
+    tac_gen_path = "./data/train_skewed.json"  # convert to TACRED, TACREV, or Re-TACRED dataset format
     tac_orig_path = "./data/train.json"
     merged_path = "./data/train_merged.json"
     relations_out_path = "./data/relation.csv"
     icl_prompts_path = "./data/train_prompts.json"
 
-    # convert_generated_to_tacred(generated_path, tac_gen_path)  # generate new training data
+    # convert_generated_to_tacred(generated_path, tac_gen_path, "gpt-4o-2024-11-20")  # generate new training data
     # merge_datasets(tac_orig_path, tac_gen_path, merged_path, orig_limit=4500, gen_limit=1500)
 
     # count_relation_types(tac_gen_path)

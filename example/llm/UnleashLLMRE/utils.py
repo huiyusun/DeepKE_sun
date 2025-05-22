@@ -18,6 +18,24 @@ def count_relation_frequencies(input_file, freq_file):
     return rel_counts
 
 
+def count_relation_percentages(input_file, output_file=None):
+    with open(input_file, "r") as f:
+        data = json.load(f)
+    total = len(data)
+    print("total relations:", total)
+    rel_counts = {}
+    for example in data:
+        rel = example.get("relation", "no_relation")
+        rel_counts[rel] = rel_counts.get(rel, 0) + 1
+    rel_percentages = {rel: round((count / total) * 100, 4) for rel, count in rel_counts.items()}
+
+    if output_file:
+        with open(output_file, "w") as f:
+            json.dump(rel_percentages, f, indent=2)
+
+    return rel_percentages
+
+
 def plot(freq_file):
     with open(freq_file, "r") as f:
         relation_counts = json.load(f)
@@ -54,8 +72,12 @@ def plot(freq_file):
 
 if __name__ == '__main__':
     # set data path to count relations and plot
-    tacred_path = "./data/train.json"
+    tacred_path = "./data/train_skewed.json"
     frequency_path = "./generated/relation_frequencies.json"
 
-    count_relation_frequencies(tacred_path, frequency_path)
-    plot(frequency_path)
+    # count_relation_frequencies(tacred_path, frequency_path)
+    # plot(frequency_path)
+
+    percentages = count_relation_percentages(tacred_path)
+    for rel, pct in sorted(percentages.items(), key=lambda x: x[1], reverse=True):
+        print(f"{rel}: {pct}%")

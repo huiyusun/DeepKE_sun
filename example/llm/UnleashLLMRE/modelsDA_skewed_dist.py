@@ -52,15 +52,14 @@ def relations_gen_count(lab_list, tot_gen, dataset):
         for r in lab_list
     }
 
-    generation_count = {r: int(label_distribution[r] * tot_gen) for r in lab_list}
+    generation_count = {r: round(label_distribution[r] * tot_gen) for r in lab_list}
     # Ensure at least one example per relation
     for r in generation_count:
         if generation_count[r] == 0:
             generation_count[r] = 1
-            tot_gen += 1
     # print(total_gen, generation_counts)
 
-    return generation_count, tot_gen
+    return generation_count
 
 
 if __name__ == "__main__":
@@ -71,17 +70,11 @@ if __name__ == "__main__":
     parser.add_argument('--dataset', type=str, required=True, choices=["tacred", "tacrev", "retacred"])
     parser.add_argument('--k', type=int, default=3, help="k-shot demonstrations")
     parser.add_argument('--timestamp_output', action='store_true',
-                        help="If set, generate a new output file with a timestamp")
+                        help="If set, generate a new output file with timestamp each time")
     args = parser.parse_args()
 
     openai.api_key = args.api_key
     model_id = "gpt-4o-2024-11-20"
-    # model_id = "deepseek-ai/deepseek-coder-1.3b-instruct"
-    # tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False, trust_remote_code=True)
-    # model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True)
-    # model.eval()
-    # device = "cuda" if torch.cuda.is_available() else "cpu"
-    # model.to(device)
 
     input_file = args.demo_path
     datasetname = args.dataset
@@ -115,49 +108,51 @@ if __name__ == "__main__":
     Generate more samples for the relation 'org:founded_by'.
     '''
 
-    total_gen = 150  # total relation examples to be generated
-    generation_counts, total_gen = relations_gen_count(label_list, total_gen, datasetname)
+    total_est_gen = 10000  # total relation examples to be generated (rounded down)
+    generation_counts = relations_gen_count(label_list, total_est_gen, datasetname)
     relation_totals = {k: 0 for k in generation_counts}
+    total_gen = sum(generation_counts.values())
+    print("Total relation examples to be generated:", sum(generation_counts.values()))
     print("Examples to be generated for each relation label:\n", generation_counts)
 
     with open(output_file, 'a') as f:
         while sum(relation_totals.values()) < total_gen:
-            for label in random.sample(list(label_list.keys()), len(label_list)):
+            for label in label_list:
                 if relation_totals[label] >= generation_counts[label]:
                     continue
                 prompt = "One sample in relation extraction datasets consists of a relation, a context, a pair of head and tail entities in the context and their entity types. The head entity has the relation with the tail entity and entities are pre-categorized as the following types: " + \
-                         (', '.join(entity_types[datasetname])) + \
-                         ". Here are some samples for relation '" + label + "':\n"
-
+                         (', '.join(entity_types[datasetname])) + ". Here are some samples for relation '" + label + "':\n"
                 v = random.sample(label_list[label], min(args.k, len(label_list[label])))  # k-shot, or sample all if labels < k
                 for i in range(len(v)):
-                    sample = "Relation: " + label + ". Context: " + ' '.join(
-                        [convert_token(token) for token in v[i]['token']]) + ' ' + "Head Entity: " + ' '.join(
-                        [convert_token(token) for token in
-                         v[i]['token'][v[i]['subj_start']:v[i]['subj_end'] + 1]]) + '. ' + "Head Type: " + v[i]['subj_type'] + '. ' + "Tail Entity: " + ' '.join(
+                    sample = "Relation: " + label + ". Context: " + ' '.join([convert_token(token) for token in v[i]['token']]) + ' ' + "Head Entity: " + ' '.join(
+                        [convert_token(token) for token in v[i]['token'][v[i]['subj_start']:v[i]['subj_end'] + 1]]) + '. ' + "Head Type: " + v[i]['subj_type'] + '. ' + "Tail Entity: " + ' '.join(
                         [convert_token(token) for token in v[i]['token'][v[i]['obj_start']:v[i]['obj_end'] + 1]]) + ". " + "Tail Type: " + v[i]['obj_type'] + ".\n"
                     prompt = prompt + sample
                 # gen_prompt = "Generate more samples in the same format like above for the relation '" + k + "'."  # format 1
                 gen_prompt = "Generate more samples in the same plain text format, without using bullets or markdown, for the relation '" + label + "'."  # format 2
                 prompt += gen_prompt
+                # print("🧾 Input Prompt:\n", prompt)
 
                 # model response
-                # print("🧾 Input prompt:\n", prompt)
-                response = openai.ChatCompletion.create(
-                    model="gpt-4o-2024-11-20",
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant that generates structured relation extraction examples in the correct format."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=1.0,
-                    max_tokens=3500,
-                )
-                decoded = response["choices"][0]["message"]["content"].strip()
-                # inputs = tokenizer(prompt, return_tensors="pt").to(device)
-                # with torch.inference_mode():
-                #    outputs = model.generate(**inputs, max_new_tokens=3500, temperature=1.0, pad_token_id=tokenizer.eos_token_id)
-                # decoded = tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
-                # print("🔹 Model generated output:\n", decoded)
+                try:
+                    response = openai.ChatCompletion.create(
+                        model="gpt-4o-2024-11-20",
+                        messages=[
+                            {"role": "system", "content": "You are a helpful assistant that generates structured relation extraction examples in the correct format."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        temperature=1.0,
+                        # top_p=0.95,
+                        # frequency_penalty=0.3,
+                        # presence_penalty=0.6,
+                        max_tokens=3500,
+                        timeout=30,  # 20 seconds timeout
+                    )
+                    decoded = response["choices"][0]["message"]["content"].strip()
+                except openai.error.Timeout as e:
+                    print(f"⏰ Timeout for relation '{label}'. Skipping this pass.")
+                    continue  # retry this label on the next loop pass
+                # print("🔹 Model Generated Output:\n", decoded)
                 res = decoded.split('\n')
 
                 for line in res:
@@ -266,7 +261,7 @@ if __name__ == "__main__":
                         DAdata['obj_start'], DAdata['obj_end'] = tpos1, tpos2
                         DAdata['relation'] = label
 
-                        # print("generated relation:", json.dumps(DAdata, indent=2, ensure_ascii=False))
+                        # print("Generated relation:", json.dumps(DAdata, indent=2, ensure_ascii=False))
                         f.writelines(json.dumps(DAdata, ensure_ascii=False))
                         f.write('\n')
                         relation_totals[label] += 1  # increment relation count
