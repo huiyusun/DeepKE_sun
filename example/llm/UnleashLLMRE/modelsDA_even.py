@@ -39,29 +39,6 @@ def convert_token(token):
     return token
 
 
-# compute number of examples to generate for each relation matching training data(e.g. tacred) relation distribution
-def relations_gen_count(lab_list, tot_gen, dataset):
-    if dataset == "tacrev":
-        dataset = "tacred"  # tacrev and tacred has the same training data
-    with open(f"./generated/relation_frequencies_{dataset}.json", "r") as freq_file:
-        relation_freqs = json.load(freq_file)
-
-    total_examples = sum(relation_freqs.values())
-    label_distribution = {
-        r: relation_freqs.get(r, 0) / total_examples
-        for r in lab_list
-    }
-
-    generation_count = {r: round(label_distribution[r] * tot_gen) for r in lab_list}
-    # Ensure at least one example per relation
-    for r in generation_count:
-        if generation_count[r] == 0:
-            generation_count[r] = 1
-    # print(total_gen, generation_counts)
-
-    return generation_count
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--api_key', '-ak', type=str, required=True)
@@ -74,8 +51,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     openai.api_key = args.api_key
-    model_id = "gpt-4o-2024-11-20"
-
     input_file = args.demo_path
     datasetname = args.dataset
 
@@ -108,18 +83,16 @@ if __name__ == "__main__":
     Generate more samples for the relation 'org:founded_by'.
     '''
 
-    total_est_gen = 10000  # total relation examples to be generated (rounded down)
-    generation_counts = relations_gen_count(label_list, total_est_gen, datasetname)
-    relation_totals = {k: 0 for k in generation_counts}
-    total_gen = sum(generation_counts.values())
-    print("Total relation examples to be generated:", sum(generation_counts.values()))
-    print("Examples to be generated for each relation label:\n", generation_counts)
+    model_id = "gpt-4o-mini-2024-07-18"  # gpt-4o-2024-11-20, gpt-4o-mini-2024-07-18, o4-mini-2025-04-16
+    total_gen = 5000  # total relation examples to be generated
+    current_gen = 0
+    print("Model id:", model_id)
 
     with open(output_file, 'a') as f:
-        while sum(relation_totals.values()) < total_gen:
+        while current_gen < total_gen:
             for label in label_list:
-                if relation_totals[label] >= generation_counts[label]:
-                    continue
+                # if label != "no_relation": # select labels
+                #   continue
                 prompt = "One sample in relation extraction datasets consists of a relation, a context, a pair of head and tail entities in the context and their entity types. The head entity has the relation with the tail entity and entities are pre-categorized as the following types: " + \
                          (', '.join(entity_types[datasetname])) + ". Here are some samples for relation '" + label + "':\n"
                 v = random.sample(label_list[label], min(args.k, len(label_list[label])))  # k-shot, or sample all if labels < k
@@ -136,7 +109,7 @@ if __name__ == "__main__":
                 # model response
                 try:
                     response = openai.ChatCompletion.create(
-                        model="gpt-4o-2024-11-20",
+                        model=model_id,
                         messages=[
                             {"role": "system", "content": "You are a helpful assistant that generates structured relation extraction examples in the correct format."},
                             {"role": "user", "content": prompt}
@@ -145,8 +118,9 @@ if __name__ == "__main__":
                         # top_p=0.95,
                         # frequency_penalty=0.3,
                         # presence_penalty=0.6,
-                        max_tokens=3500,
-                        timeout=30,  # 20 seconds timeout
+                        # max_tokens=3000,
+                        max_completion_tokens=2500,  # for newer models
+                        timeout=30,  # 30 seconds timeout
                     )
                     decoded = response["choices"][0]["message"]["content"].strip()
                 except openai.error.Timeout as e:
@@ -155,9 +129,8 @@ if __name__ == "__main__":
                 # print("🔹 Model Generated Output:\n", decoded)
                 res = decoded.split('\n')
 
+                gen_count = 0
                 for line in res:
-                    if relation_totals[label] >= generation_counts[label]:
-                        continue
                     if len(line) == 0:
                         continue
 
@@ -264,9 +237,10 @@ if __name__ == "__main__":
                         # print("Generated relation:", json.dumps(DAdata, indent=2, ensure_ascii=False))
                         f.writelines(json.dumps(DAdata, ensure_ascii=False))
                         f.write('\n')
-                        relation_totals[label] += 1  # increment relation count
+                        gen_count += 1
+                        current_gen += 1
                     except Exception as e:
                         print(f"Error processing line: {line[:80]} - {e}")
                         continue
 
-                print(f"✅ Generated {relation_totals[label]} total for relation '{label}' | Total generated: {sum(relation_totals.values())}/{total_gen}")
+                print(f"✅ Generated {gen_count} new examples for relation '{label}' | Total generated: {current_gen}/{total_gen}")
