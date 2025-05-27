@@ -11,5 +11,5 @@ python $MODEL \
   --demo_path $DEMO_PATH \
   --output_dir $OUTPUT_DIR \
   --dataset $DATASET \
-  --k 3 \
+  --k 8 \
   --timestamp_output

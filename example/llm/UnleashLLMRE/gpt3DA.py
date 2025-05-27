@@ -87,14 +87,10 @@ if __name__ == "__main__":
                      (', '.join(entity_types[datasetname])) + \
                      ". Here are some samples for relation '" + k + "':\n"
             for i in range(args.k):
-                sample = "Relation: " + k + ". Context: " + ' '.join(
-                    [convert_token(token) for token in v[i]['token']]) + ' ' + "Head Entity: " + ' '.join(
-                    [convert_token(token) for token in
-                     v[i]['token'][v[i]['subj_start']:v[i]['subj_end'] + 1]]) + '. ' + "Head Type: " + v[i][
-                             'subj_type'] + '. ' + "Tail Entity: " + ' '.join([convert_token(token) for token in
-                                                                               v[i]['token'][v[i]['obj_start']:v[i][
-                                                                                                                   'obj_end'] + 1]]) + ". " + "Tail Type: " + \
-                         v[i]['obj_type'] + ".\n"
+                sample = "Relation: " + k + ". Context: " + ' '.join([convert_token(token) for token in v[i]['token']]) + ' ' + "Head Entity: " + ' '.join(
+                    [convert_token(token) for token in v[i]['token'][v[i]['subj_start']:v[i]['subj_end'] + 1]]) + '. ' + "Head Type: " + v[i][
+                             'subj_type'] + '. ' + "Tail Entity: " + ' '.join(
+                    [convert_token(token) for token in v[i]['token'][v[i]['obj_start']:v[i]['obj_end'] + 1]]) + ". " + "Tail Type: " + v[i]['obj_type'] + ".\n"
                 prompt = prompt + sample
             prompt = prompt + "Generate more samples like above for the relation '" + k + "'."
             response = openai.Completion.create(

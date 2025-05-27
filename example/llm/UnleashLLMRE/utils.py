@@ -1,4 +1,5 @@
 import json
+import difflib
 import matplotlib.pyplot as plt
 import os
 import spacy
@@ -12,7 +13,7 @@ nlp = spacy.load("en_core_web_sm")
 
 
 # convert the generated DA output files from UnleaseLLMRE to the data format of the original TACRED, TACREV or Re-TACRED
-def convert_generated_to_tac(input_path, output_path, model):
+def convert_generated_to_tac(input_path, model):
     print("generating new data examples:")
     doc = os.path.basename(input_path).replace('.json', '')
     converted = []
@@ -49,9 +50,12 @@ def convert_generated_to_tac(input_path, output_path, model):
                 print(f"Skipping line {i}: couldn't locate subj/obj in tokens.")
 
     new_converted = [ex for ex in converted]
+    filename = os.path.basename(input_path).replace("generated", "train").replace(".json", f"_{len(converted)}.json")
+    output_path = os.path.join("./tacred/skewed/", filename)
     with open(output_path, 'w') as fout:
         json.dump(new_converted, fout, indent=2)
     print(f"Saved {len(new_converted)} new converted examples to {output_path}")
+    count_relation_stats(output_path)
 
 
 def merge_datasets(paths, limit=None):
@@ -78,6 +82,7 @@ def merge_datasets(paths, limit=None):
     with open(merged_file, 'w') as fout:
         json.dump(merged, fout, indent=2)
     print(f"Merged {len(merged)} examples into {merged_file}")
+    count_relation_stats(merged_file)
 
 
 def extract_relations_to_csv(json_path, csv_output_path):
@@ -326,124 +331,22 @@ def generate_skewed_dataset(orig_paths, total_gen, exclude_no_relation=False):
         count_relation_stats(out_path)
 
 
-# Normalize fragmented field labels and values that are split across lines
-def normalize_fragmented_fields(decoded):
-    # Clean up markdown bullets and special punctuation
-    decoded = re.sub(r'^[\s>*\-•#]+', '', decoded, flags=re.MULTILINE)
-    # Replace Chinese punctuation with English equivalents
-    decoded = decoded.replace('：', ':').replace('。', '.')
-
-    # Step 1: Merge fragmented lines into proper field lines
-    lines = decoded.split('\n')
-    merged_lines = []
-    buffer = ""
-    for line in lines:
-        line = line.strip()
-        # Normalize Chinese punctuation in line as well (for robustness)
-        line = line.replace('：', ':').replace('。', '.')
-        if re.match(r"^(Relation|Context|Head Entity|Head Type|Tail Entity|Tail Type)$", line):
-            buffer = line
-        elif line == ":":
-            continue
-        # Accept both English and Chinese colon/period at start
-        elif buffer and (line.startswith(":") or line.startswith("：") or line.startswith(".")):
-            merged_lines.append(buffer + line)
-            buffer = ""
-        elif buffer:
-            merged_lines.append(buffer + ": " + line)
-            buffer = ""
-        else:
-            merged_lines.append(line)
-
-    # Step 2: Normalize extra spacing and ensure trailing period if missing
-    def clean_line(l):
-        l = l.strip()
-        if l.startswith("Relation:"):
-            parts = l.split(":", 1)
-            if len(parts) == 2:
-                relation_type = parts[1].strip().replace(" ", "")
-                l = f"Relation: {relation_type}."
-        elif l.startswith("Context:"):
-            if not l.endswith('.'):
-                l += '.'
-        return l
-
-    cleaned = [clean_line(l) for l in merged_lines if l]
-
-    # Step 3: Group lines into complete samples
-    res = []
-    temp = ""
-    for line in cleaned:
-        if line.startswith("Relation:"):
-            if temp:
-                res.append(temp.strip())
-                temp = ""
-            temp += line + " "
-        elif any(line.startswith(prefix) for prefix in ["Context:", "Head Entity:", "Head Type:", "Tail Entity:", "Tail Type:"]):
-            temp += line + " "
-        elif line.strip() == "":
-            if temp:
-                res.append(temp.strip())
-                temp = ""
-        else:
-            temp += line + " "
-    if temp:
-        res.append(temp.strip())
-
-    # check the output matches the expected format exactly
-    final_res = []
-    for sample in res:
-        sample = sample.strip()
-        if all(field in sample for field in ["Relation:", "Context:", "Head Entity:", "Head Type:", "Tail Entity:", "Tail Type:"]):
-            final_res.append(sample)
-        else:
-            print(f"Error: Sample does not match expected format:\n{sample}\n")
-
-    return final_res
-
-
 if __name__ == '__main__':
     # DA file paths
-    gen_path = "./generated/tacred/skewed/generated_gpt4omini_newprompt.json"  # TACRED, TACREV, or Re-TACRED dataset format
-    tac_path = "./tacred/train_30000.json"
+    gen_path = "./generated/tacred/generated_gpt4omini_minoradjust.json"  # TACRED, TACREV, or Re-TACRED dataset format
+    tac_path = "./tacred/skewed/train_gpt4omini_merged_20950.json"
     gpt4o, gpt45preview, gpt41, gpt4o0806, gpt4omini, o4mini, o3mini, gpt41mini, gpt41nano = (
         "./tacred/skewed/train_gpt4o_multi_1000.json", "./tacred/skewed/train_gpt45preview_multi_1000.json", "to be generated",
         "to be generated", "./tacred/skewed/train_gpt4omini_multi_1000.json", "./tacred/skewed/train_o4mini_multi_1000.json",
-        "./tacred/skewed/train_o3mini_multi_1000.json", "./tacred/skewed/ttrain_gpt41mini_multi_1000.json", "./tacred/skewed/train_gpt41nano_multi_1000.json")
-    multi_models = [gpt4o, gpt4omini, o4mini, gpt41mini, gpt41nano]  # for multiGPTs: 1000 examples from each model
+        "./tacred/skewed/train_o3mini_multi_1000.json", "./tacred/skewed/train_gpt41mini_multi_1000.json", "./tacred/skewed/train_gpt41nano_multi_1000.json")
+    multi_models = [gpt4o, gpt4omini, o4mini, gpt41mini, gpt41nano, o3mini, gpt45preview]  # for multiGPTs: 1000 examples from each model
 
-    # convert_generated_to_tac(gen_path, tac_path, "gpt-4o-mini-2024-07-18")  # remenber to change model id for differet models
+    convert_generated_to_tac(gen_path, "gpt-4o-mini-2024-07-18")  # remenber to change model id for differet models
+    # generate_skewed_dataset([tac_path], total_gen=2000)
+    # merge_datasets([tac_path,"./tacred/train_10000.json"], limit=None)
     # count_relation_stats(tac_path, sort_by_count=True, sample_num=None, sample_method="seq", out_file="./generated/relation_stats.json")  # count stats of the dataset
-    # relations_gen_count(2500, "tacred")
+    # relations_gen_count(15000, "tacred")
     # plot("./generated/relation_stats.json")  # plot relation frequencies
-    # generate_skewed_dataset([tac_path], total_gen=30000)
-    # merge_datasets(["./tacred/train_gpt4omini+orig_merged_9969.json", "./tacred/train_1.json"], limit=None)
-
-    decoded = """
-     
-Relation: per:title. Context: The legendary musician Bob Dylan was awarded the Nobel Prize in Literature for his remarkable contribution to music and culture worldwide this decade.
-Head Entity: Bob Dylan.
-Head Type: PERSON.
-Tail Entity: musician. 
-Tail Type: TITLE.
-Relation: per:title. Context: Renowned physicist Stephen Hawking shared groundbreaking theories on black holes before his passing.
-Head Entity: Stephen Hawking.
-Head Type: PERSON.
-Tail Entity: physicist.
-Tail Type: TITLE.
-Relation: per:title. Context：The influential writer Toni Morrison received numerous accolades for her literary works throughout her career.
-Head Entity：Toni Morrison.
-Head Type：PERSON.
-Tail Entity：writer.
-Tail Type：TITLE.
-Relation：per:title。Context：The famous director Christopher Nolan is known for his innovative filmmaking techniques in Hollywood blockbusters.
-Head Entity：Christopher Nolan。
-Head Type：PERSON。
-Tail Entity：director。
-Tail Type：TITLE。
-
-      """
-    print(normalize_fragmented_fields(decoded))
 
     # icl file paths
     relations_icl_path = "./data/relation_icl.csv"
