@@ -48,7 +48,7 @@ if __name__ == "__main__":
     # 250k tokens family: gpt-4o-2024-11-20, gpt-4.5-preview-2025-02-27, gpt-4.1-2025-04-14, gpt-4o-2024-08-06
     # 2.5M tokens family: gpt-4o-mini-2024-07-18, o4-mini-2025-04-16, gpt-4.1-mini-2025-04-14, o3-mini-2025-01-31, gpt-4.1-nano-2025-04-14
     model_id = "gpt-4o-mini-2024-07-18"
-    total_est_gen = 3030  # total relation examples to be generated (estimated)
+    total_est_gen = 3000  # total relation examples to be generated (estimated)
     generation_counts = relations_gen_count(total_est_gen, datasetname)  # calculate number of examples to be generated per relation type
     relation_totals = {k: 0 for k in generation_counts}
     total_gen = sum(generation_counts.values())
@@ -65,7 +65,7 @@ if __name__ == "__main__":
                     "One sample in relation extraction datasets consists of a relation, a context, a pair of head and tail entities in the context and their entity types. "
                     "The head entity has the relation with the tail entity and entities are pre-categorized as the following types: "
                     f"{', '.join(entity_types[datasetname])}.\n"
-                    f"Below are some samples for the relation '{label}':\n"
+                    f"Below are some samples for the relation {label}:\n"
                 )
 
                 v = random.sample(label_list[label], min(args.k, len(label_list[label])))  # k-shot, or sample all if labels < k
@@ -80,7 +80,7 @@ if __name__ == "__main__":
                     )
                     prompt = prompt + sample
                 gen_prompt = (
-                    f"Now generate 10 more samples in the same format for the relation '{label}'."
+                    f"Now generate 10 more samples in the same format for the relation: {label}."
                 )
                 prompt += gen_prompt
                 print("🧾 Input Prompt:\n", prompt)
@@ -114,11 +114,9 @@ if __name__ == "__main__":
                     if relation_totals[label] >= generation_counts[label]:
                         continue
                     DAdata = construct_relation(rel, label, datasetname)  # construct the relation example from the normalized model generated output
-                    # print("Generated relation:", json.dumps(DAdata, indent=2, ensure_ascii=False))
                     if DAdata is not None:
+                        print("Generated relation:", json.dumps(DAdata, indent=2, ensure_ascii=False))
                         f.writelines(json.dumps(DAdata, ensure_ascii=False))
                         f.write('\n')
                         relation_totals[label] += 1  # increment relation count
-                    else:
-                        print("Error constructing the relation:", rel)
                 print(f"✅ Generated {relation_totals[label]} total for relation '{label}' | Total generated: {sum(relation_totals.values())}/{total_gen}")

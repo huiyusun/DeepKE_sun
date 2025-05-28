@@ -1,4 +1,4 @@
-import difflib
+from difflib import get_close_matches
 import re
 import json
 import os
@@ -47,171 +47,217 @@ def convert_token(token):
 
 
 def normalize_fragmented_fields(decoded, dataset='tacred'):
-    """
-    Normalize and extract structured fields from model-generated relation extraction examples.
-    Returns:
-        List[Dict[str, str]]: Each dict contains the normalized string as 'text' and extracted fields:
-            'relation', 'context', 'head_entity', 'head_type', 'tail_entity', 'tail_type'
-    """
+    def clean_entity(entity, context):
+        s = entity.strip()
+        # Remove all trailing non-word, non-space, non-period chars, but preserve periods
+        s_core = re.sub(r'[^\w\s.]+$', '', s)
+        # Try context match: two, one, or no periods, but only if next char in context is not a word char
+        for period_count in (2, 1, 0):
+            candidate = s_core + ('.' * period_count)
+            pattern = re.escape(candidate) + r'(\W|$)'
+            if candidate and re.search(pattern, context):
+                return candidate
+        # If not in context, reduce trailing periods to max one (unless original expected two, but default to one)
+        m = re.match(r'^(.*?)(\.{1,})?$', s_core)
+        core = m.group(1)
+        trailing = m.group(2) if m.group(2) else ''
+        if trailing:
+            trailing = '.'  # Always reduce to one
+        # Remove all other trailing punctuation (except periods)
+        result = (core + trailing).strip()
+        result = re.sub(r'[^\w\s.]+$', '', result)
+        return result
 
-    decoded = decoded.replace("：", ":").replace("。", ".")
-    decoded = re.sub(r"\n+", "\n", decoded).strip()
+    # Normalize separators and noise
+    decoded = decoded.replace("：", ":")
+    decoded = re.sub(r"[*@#\^•]+", "", decoded)
+    decoded = re.sub(r"\s+", " ", decoded)
+    # Insert newline before every 'Relation:' not at start of line
+    decoded = re.sub(r"(?<!\n)(Relation\s*[:：])", r"\n\1", decoded, flags=re.IGNORECASE)
 
-    # Improved preprocessing: robustly collapse field headers and values even if glued or spaced inconsistently
-    lines = decoded.splitlines()
-    field_labels = ["Relation", "Context", "Head Entity", "Head Type", "Tail Entity", "Tail Type"]
-    collapsed_lines = []
-    current_field = None
-    field_buffer = []
-    for line in lines:
-        line = line.strip()
-        if not line:
+    # Split on every new Relation field, so each block is a separate example
+    parts = re.split(r"\bRelation\s*[:：]", decoded, flags=re.IGNORECASE)
+    outputs = []
+    for part in parts:
+        part = part.strip()
+        if not part:
             continue
-        is_field_header = any(re.match(rf"^{label}\b", line, re.IGNORECASE) for label in field_labels)
-        if is_field_header:
-            if current_field:
-                collapsed_lines.append(f"{current_field} {' '.join(field_buffer).strip()}")
-            # Find which label matched
-            matched_label = next(label for label in field_labels if re.match(rf"^{label}\b", line, re.IGNORECASE))
-            # normalize header to have colon and use only the label part (for cases like "Relation : ...")
-            # Find position after label (possibly with spaces/colons)
-            header_match = re.match(rf"^{matched_label}\s*:?", line, re.IGNORECASE)
-            if header_match:
-                start_idx = header_match.end()
-            else:
-                start_idx = len(matched_label)
-            current_field = f"{matched_label}:"
-            field_buffer = [line[start_idx:].strip()] if len(line) > start_idx else []
+        # Prepend so our regex can work as usual
+        text = "Relation: " + part
+
+        # field extraction using position indexing to avoid overlap/label confusion
+        field_labels = [
+            ("relation", "Relation"),
+            ("context", "Context"),
+            ("head_entity", "Head Entity"),
+            ("head_type", "Head Type"),
+            ("tail_entity", "Tail Entity"),
+            ("tail_type", "Tail Type"),
+        ]
+        found = {}
+        for m in re.finditer(r"(Relation|Context|Head Entity|Head Type|Tail Entity|Tail Type)\s*[:：]", text, re.IGNORECASE):
+            label = m.group(1)
+            start = m.end()
+            # Find end of this field (start of next label or end of string)
+            next_match = re.search(
+                r"(Relation|Context|Head Entity|Head Type|Tail Entity|Tail Type)\s*[:：]", text[start:], re.IGNORECASE
+            )
+            end = start + next_match.start() if next_match else len(text)
+            value = text[start:end].strip()
+            # Only use the first occurrence of each label
+            if label.lower() not in found:
+                found[label.lower()] = value
+
+        # Apply cleaning for each field
+        relation = found.get("relation", "").replace(" ", "").strip(" .。:：").lower()
+        context = found.get("context", "").strip()
+        head_entity = clean_entity(found.get("head entity", "").strip(), context)
+        head_type = re.sub(r"[^A-Z]", "", found.get("head type", "").upper())
+        # Find the 'Tail Entity' immediately before 'Tail Type'
+        tail_entity = ""
+        tail_entity_matches = list(
+            re.finditer(r"Tail Entity\s*[:：]\s*(.*?)(?=(Tail Type\s*[:：]|Head Entity\s*[:：]|Relation\s*[:：]|Context\s*[:：]|Head Type\s*[:：]|$))", text, re.IGNORECASE | re.DOTALL))
+        if tail_entity_matches:
+            tail_entity = tail_entity_matches[-1].group(1).strip()
         else:
-            field_buffer.append(line)
-    if current_field:
-        collapsed_lines.append(f"{current_field} {' '.join(field_buffer).strip()}")
+            tail_entity = found.get("tail entity", "").strip()
+        tail_entity = clean_entity(tail_entity, context)
 
-    decoded = "\n".join(collapsed_lines)
+        # --- Fuzzy entity correction using context ---
+        from difflib import get_close_matches
 
-    # Now split into blocks by Relation:
-    blocks = re.split(r"\n(?=Relation\s*:)", decoded, flags=re.IGNORECASE)
-    blocks = [b.strip() for b in blocks if b.strip()]
+        def best_match_in_context(entity, context):
+            # Prefer candidates that match full words and are long enough
+            entity_words = entity.strip().split()
+            entity_len = len(entity_words)
+            context_words = context.strip().split()
+            candidates = []
+            for n in range(max(1, entity_len-2), entity_len+3):
+                for i in range(len(context_words) - n + 1):
+                    chunk = " ".join(context_words[i:i+n])
+                    candidates.append(chunk)
+            # Fuzzy match with difflib
+            matches = get_close_matches(entity, candidates, n=1, cutoff=0.7)
+            if matches:
+                # Return the match after removing trailing non-alphanum except one period
+                match = matches[0]
+                match = re.sub(r'[^\w\s]+$', '', match)
+                if (match + '.') in context:
+                    return match + '.'
+                return match
+            # fallback to cleaned entity
+            return clean_entity(entity, context)
 
-    formatted = []
-    for block in blocks:
-        try:
-            # regex for more lenient and robust field extraction
-            rel_match = re.search(r"Relation\s*:\s*(.+?)\s*Context\s*:", block, re.DOTALL | re.IGNORECASE)
-            ctx_match = re.search(r"Context\s*:\s*(.+?)\s*Head\s*Entity\s*:", block, re.DOTALL | re.IGNORECASE)
-            he_match = re.search(r"Head\s*Entity\s*:\s*(.+?)\s*Head\s*Type\s*:", block, re.DOTALL | re.IGNORECASE)
-            ht_match = re.search(r"Head\s*Type\s*:\s*(.+?)\s*Tail\s*Entity\s*:", block, re.DOTALL | re.IGNORECASE)
-            te_match = re.search(r"Tail\s*Entity\s*:\s*(.+?)\s*Tail\s*Type\s*:", block, re.DOTALL | re.IGNORECASE)
-            tt_match = re.search(r"Tail\s*Type\s*:\s*([A-Z_]+)\.?", block, re.IGNORECASE)
+        # After cleaning, check for exact case-sensitive match first
+        if head_entity not in context:
+            corrected_head = best_match_in_context(head_entity, context)
+            if corrected_head:
+                head_entity = corrected_head
 
-            if not all([rel_match, ctx_match, he_match, ht_match, te_match, tt_match]):
-                print("Error: Could not extract all fields:\n", block)
-                continue
+        if tail_entity not in context:
+            corrected_tail = best_match_in_context(tail_entity, context)
+            if corrected_tail:
+                tail_entity = corrected_tail
+        tail_type = re.sub(r"[^A-Z]", "", found.get("tail type", "").upper())
 
-            relation = rel_match.group(1).replace("\n", "").replace(" ", "").strip().rstrip(".")
+        # Context punctuation: end with period unless already ends with . .. ...
+        context = re.sub(r"\s+", " ", context)
+        if context and not re.search(r"\.\.\.$", context) and not re.search(r"\.\.$", context) and not re.search(r"\.$", context):
+            context += "."
 
-            # Normalize common typos in known relations (including missing colons, etc.)
-            relation_fixes = {
-                "per:sateorprovinces_of_residence": "per:stateorprovinces_of_residence",
-                "orgtop_members/employees": "org:top_members/employees",
-                "orgpolitical/religious_affiliation": "org:political/religious_affiliation"
-            }
-            relation = relation_fixes.get(relation, relation)
+        # Fuzzy matching for relation and entity types
+        rel_types = relation_types.get(dataset, [])
+        ent_types = entity_types.get(dataset, [])
 
-            # Improved context extraction and punctuation handling
-            context = ctx_match.group(1).strip()
-            context = context.replace("\n", " ").strip()
-            context = re.sub(r'\s*\.*\s*$', '', context) + '.'
-            head_entity = he_match.group(1).strip()
-            head_type = ht_match.group(1).strip()
-            tail_entity = te_match.group(1).strip()
-            tail_type = tt_match.group(1).strip()
+        # match relation
+        if relation not in rel_types:
+            matches = get_close_matches(relation, rel_types, n=1, cutoff=0.7)
+            if matches:
+                relation = matches[0]
+        # match head_type
+        if head_type not in ent_types:
+            matches = get_close_matches(head_type, ent_types, n=1, cutoff=0.7)
+            if matches:
+                head_type = matches[0]
+        # match tail_type
+        if tail_type not in ent_types:
+            matches = get_close_matches(tail_type, ent_types, n=1, cutoff=0.7)
+            if matches:
+                tail_type = matches[0]
 
-            # Remove surrounding '**' or similar markdown artifacts from fields, including markdown-style asterisks and spaces
-            def clean_field(val):
-                return re.sub(r"^\s*\*+\s*|\s*\*+\s*$", "", val.strip())
+        output = (
+            f"Relation: {relation}. Context: {context} "
+            f"Head Entity: {head_entity}. Head Type: {head_type}. "
+            f"Tail Entity: {tail_entity}. Tail Type: {tail_type}."
+        )
+        fields = dict(
+            relation=relation,
+            context=context,
+            head_entity=head_entity,
+            head_type=head_type,
+            tail_entity=tail_entity,
+            tail_type=tail_type,
+            text=output.strip()
+        )
 
-            relation = clean_field(relation)
-            context = clean_field(context)
-            head_entity = clean_field(head_entity)
-            head_type = clean_field(head_type)
-            tail_entity = clean_field(tail_entity)
-            tail_type = clean_field(tail_type)
-
-            # --- Fuzzy match correction for known types ---
-            def fuzzy_correct(item, choices):
-                match = difflib.get_close_matches(item, choices, n=1, cutoff=0.85)
-                return match[0] if match else item
-
-            relation = fuzzy_correct(relation, relation_types[dataset])
-            head_type = fuzzy_correct(head_type, entity_types[dataset])
-            tail_type = fuzzy_correct(tail_type, entity_types[dataset])
-
-            # Normalize all fields for trailing newlines, whitespace, and trailing periods
-            head_entity = head_entity.replace("\n", " ").strip().rstrip(".")
-            head_type = head_type.replace("\n", " ").strip().rstrip(".")
-            tail_entity = tail_entity.replace("\n", " ").strip().rstrip(".")
-            tail_type = tail_type.replace("\n", " ").strip().rstrip(".")
-
-            output = f"Relation: {relation}. Context: {context} Head Entity: {head_entity}. Head Type: {head_type}. Tail Entity: {tail_entity}. Tail Type: {tail_type}."
-            formatted.append({
-                "text": output,
-                "relation": relation,
-                "context": context,
-                "head_entity": head_entity,
-                "head_type": head_type,
-                "tail_entity": tail_entity,
-                "tail_type": tail_type
-            })
-
-        except Exception as e:
-            print("Parsing error:", e)
+        # Only include output if all fields are present
+        if not all([relation, context, head_entity, head_type, tail_entity, tail_type]):
             continue
+        outputs.append(fields)
 
-    return formatted
+    return outputs
 
 
 # extract the relation label and entity information matching the dataset format (e.g., tacred, retacred, tacrev)
-def construct_relation(rel, label, datasetname):
-    # takes each output of normalize_fragmented_fields() as input rel
+def construct_relation(rel, label, datasetname, verbose=True):
+    # Takes each output of normalize_fragmented_fields() as input rel
     if not rel or not isinstance(rel, dict):
+        if verbose:
+            print(f"[construct_relation] Skipping: input is None or not a dict: {rel}")
         return
 
     if rel["relation"] != label:
+        if verbose:
+            print(f"[construct_relation] Skipping: relation '{rel['relation']}' != target label '{label}'")
         return
 
-    # text
     DAdata = {
         'text': rel["context"]
     }
 
+    def validate_type(type_val, typeset, field):
+        t_upper = type_val.upper()
+        if (
+                type_val in typeset
+                or type_val.replace('_', ' ') in typeset
+                or t_upper == "MISCELLANEOUS"
+                or t_upper == "MISC"
+        ):
+            return "MISC" if t_upper in ("MISCELLANEOUS", "MISC") else type_val.upper().replace(" ", "_")
+        else:
+            if verbose:
+                print(f"[construct_relation] Invalid {field} type: '{type_val}' not in {typeset}")
+            return None
+
     # head entity and type
     head = rel["head_entity"]
-    headtype = rel["head_type"]
-    if headtype in entity_types[datasetname] or headtype.replace('_', ' ') in entity_types[datasetname]:
-        headtype = headtype.upper()
-        if headtype == "MISCELLANEOUS":
-            headtype = "MISC"
-        else:
-            headtype = headtype.replace(" ", "_")
-        DAdata["subj_type"] = headtype
-    else:
+    headtype = validate_type(rel["head_type"], entity_types[datasetname], "head")
+    if not headtype:
+        if verbose:
+            print(f"[construct_relation] Example: {rel}")
         return
+    DAdata["subj_type"] = headtype
 
     # tail entity and type
     tail = rel["tail_entity"]
-    tailtype = rel["tail_type"]
-    if tailtype in entity_types[datasetname] or tailtype.replace('_', ' ') in entity_types[datasetname]:
-        tailtype = tailtype.upper()
-        if tailtype == "MISCELLANEOUS":
-            tailtype = "MISC"
-        else:
-            tailtype = tailtype.replace(" ", "_")
-        DAdata["obj_type"] = tailtype
-    else:
+    tailtype = validate_type(rel["tail_type"], entity_types[datasetname], "tail")
+    if not tailtype:
+        if verbose:
+            print(f"[construct_relation] Example: {rel}")
         return
+    DAdata["obj_type"] = tailtype
 
-    # head and tail positions
+    # head and tail positions (case-insensitive matching, returns first occurrence)
     textlower = rel["context"].lower()
     headlower = head.lower()
     if headlower in textlower:
@@ -219,13 +265,20 @@ def construct_relation(rel, label, datasetname):
         hpos2 = hpos1 + len(headlower)
         truehead = rel["context"][hpos1:hpos2]
     else:
+        if verbose:
+            print(f"[construct_relation] Head entity '{head}' not found in context: {rel['context']}")
+            print(f"Example: {rel}")
         return
+
     taillower = tail.lower()
     if taillower in textlower:
         tpos1 = textlower.index(taillower)
         tpos2 = tpos1 + len(taillower)
         truetail = rel["context"][tpos1:tpos2]
     else:
+        if verbose:
+            print(f"[construct_relation] Tail entity '{tail}' not found in context: {rel['context']}")
+            print(f"Example: {rel}")
         return
 
     DAdata["subj"] = truehead
@@ -237,46 +290,69 @@ def construct_relation(rel, label, datasetname):
     return DAdata
 
 
-# --- TACRED format validator and file block tester ---
-def is_valid_tacred_format(line, dataset):
-    pattern = (
-        r"Relation: ([^\.]+)\. Context: .+?\."
-        r".*?\bHead Entity: .+?\."
-        r".*?\bHead Type: ([A-Z_]+)\."
-        r".*?\bTail Entity: .+?\."
-        r".*?\bTail Type: ([A-Z_]+)\."
-    )
-    match = re.fullmatch(pattern, line.strip(), re.IGNORECASE | re.DOTALL)
-    if not match:
-        return False, "Pattern match failed"
+# Test normalize_fragmented_fields against hand picked examples
+def test_from_examples_file(input_path):
+    with open(input_path, 'r', encoding='utf-8') as f:
+        content = f.read()
 
-    rel, head_type, tail_type = match.groups()
-    rel_list = relation_types[dataset]
-    ent_list = entity_types[dataset]
+    # Separate model input and expected output
+    input_section = re.search(r"Input examples:(.*)Expected output:", content, re.DOTALL)
+    expected_section = re.search(r"Expected output:(.*)", content, re.DOTALL)
 
-    # Normalize MISC to MISCELLANEOUS
-    if head_type == "MISC":
-        head_type = "MISCELLANEOUS"
-    if tail_type == "MISC":
-        tail_type = "MISCELLANEOUS"
+    if not input_section or not expected_section:
+        print("❌ Failed to parse input or expected output sections.")
+        return
 
-    if rel not in rel_list:
-        return False, f"Invalid relation: {rel}"
-    if head_type not in ent_list:
-        return False, f"Invalid head type: {head_type}"
-    if tail_type not in ent_list:
-        return False, f"Invalid tail type: {tail_type}"
+    input_text = input_section.group(1).strip()
+    expected_text = expected_section.group(1).strip()
+    expected_lines = [
+        re.sub(
+            r"(Head Type:|Tail Type:)\s*(\w+)",
+            lambda m: f"{m.group(1)} {m.group(2).upper()}",
+            line.strip()
+        )
+        for line in expected_text.splitlines() if line.strip()
+    ]
 
-    return True, "OK"
+    normalized = normalize_fragmented_fields(input_text)
+    generated_lines = [entry["text"].strip() for entry in normalized]
+
+    print("--- TEST RESULTS ---")
+    passed = True
+
+    for i, (gen, exp) in enumerate(zip(generated_lines, expected_lines)):
+        print(f"\n--- Example {i + 1} ---")
+        if gen != exp:
+            passed = False
+            print(f"❌ Mismatch")
+        else:
+            print(f"✅ Match")
+        print(f"Expected output : {exp}")
+        print(f"Generated output: {gen}")
+    if len(generated_lines) != len(expected_lines):
+        passed = False
+        print(f"\n❌ Number of outputs mismatch. Expected {len(expected_lines)}, got {len(generated_lines)}")
+
+    if passed:
+        print("\n✅ All normalized outputs match expected results.")
+    else:
+        print("\n❌ Some outputs did not match expected.")
 
 
-def test_from_txt_file(filepath, dataset='tacred'):
+# test normalize_fragmented_fields
+def test_from_terminal_file(filepath, dataset='tacred'):
+    import re
     with open(filepath, 'r', encoding='utf-8') as f:
         lines = f.readlines()
 
     results = []
     in_block = False
     block = []
+
+    # Strict format pattern for TACRED
+    strict_pattern = (
+        r"^Relation: [^\.]+\. Context: .+?\. Head Entity: .+?\. Head Type: [A-Z_ ]+\. Tail Entity: .+?\. Tail Type: [A-Z_ ]+\.$"
+    )
 
     for line in lines:
         if "Model Generated Output" in line:
@@ -289,8 +365,9 @@ def test_from_txt_file(filepath, dataset='tacred'):
                     raw_text = ''.join(block).strip()
                     normalized = normalize_fragmented_fields(raw_text)
                     for i, entry in enumerate(normalized):
-                        valid, reason = is_valid_tacred_format(entry["text"], dataset)
-                        results.append((entry, valid, reason))
+                        # Only consider valid if the normalized output matches the strict TACRED format
+                        valid_format = bool(re.fullmatch(strict_pattern, entry["text"].strip()))
+                        results.append((entry, valid_format))
                 in_block = False
                 block = []
             else:
@@ -299,19 +376,65 @@ def test_from_txt_file(filepath, dataset='tacred'):
     # Write results to output file
     output_path = os.path.join(os.path.dirname(filepath), "validation_results.txt")
     with open(output_path, 'w', encoding='utf-8') as out_f:
-        out_f.write("--- FILE VALIDATION RESULTS ---\n")
-        for i, (entry, valid, reason) in enumerate(results):
-            out_f.write(f"\nExample {i + 1} - {'✅ VALID' if valid else '❌ INVALID'} ({reason}):\n")
+        out_f.write("--- FILE VALIDATION RESULTS (STRICT FORMAT) ---\n")
+        for i, (entry, valid_format) in enumerate(results):
+            out_f.write(f"\nExample {i + 1} - {'✅ STRICT FORMAT' if valid_format else '❌ INVALID FORMAT'}:\n")
             out_f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         # --- Append summary statistics ---
         total = len(results)
-        valid_count = sum(1 for _, valid, _ in results if valid)
+        valid_count = sum(1 for _, valid in results if valid)
         invalid_count = total - valid_count
         out_f.write("\n--- SUMMARY ---\n")
         out_f.write(f"Total Entries: {total}\n")
-        out_f.write(f"Valid Entries: {valid_count}\n")
-        out_f.write(f"Invalid Entries: {invalid_count}\n")
+        out_f.write(f"Valid Format Entries: {valid_count}\n")
+        out_f.write(f"Invalid Format Entries: {invalid_count}\n")
+
+
+# Test normalize_fragmented_fields against hand picked examples
+def test_from_examples_file(input_path):
+    with open(input_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # Separate model input and expected output
+    input_section = re.search(r"Input examples:(.*)Expected output:", content, re.DOTALL)
+    expected_section = re.search(r"Expected output:(.*)", content, re.DOTALL)
+
+    if not input_section or not expected_section:
+        print("❌ Failed to parse input or expected output sections.")
+        return
+
+    input_text = input_section.group(1).strip()
+    expected_text = expected_section.group(1).strip()
+    expected_lines = [line.strip() for line in expected_text.splitlines() if line.strip()]
+
+    normalized = normalize_fragmented_fields(input_text)
+    generated_lines = [entry["text"].strip() for entry in normalized]
+
+    print("--- TEST RESULTS ---")
+    passed = True
+    input_blocks = [blk.strip() for blk in re.split(r"\n\s*\n", input_text) if blk.strip()]
+    for i, (gen, exp) in enumerate(zip(generated_lines, expected_lines)):
+        print(f"\n--- Example {i + 1} ---")
+        if i < len(input_blocks):
+            print(f"Input example:\n{input_blocks[i]}")
+        if gen != exp:
+            passed = False
+            print(f"❌ Mismatch")
+        else:
+            print(f"✅ Match")
+        print(f"Expected output : {exp}")
+        print(f"Generated output: {gen}")
+
+    if len(generated_lines) != len(expected_lines):
+        passed = False
+        print(f"\n❌ Number of outputs mismatch. Expected {len(expected_lines)}, got {len(generated_lines)}")
+
+    if passed:
+        print("\n✅ All normalized outputs match expected results.")
+    else:
+        print("\n❌ Some outputs did not match expected.")
 
 
 if __name__ == '__main__':
-    test_from_txt_file("./generated/terminal_output-prompt+generated_examples.txt", dataset='tacred')
+    test_from_terminal_file("./generated/terminal_output-varying_temp,freq_pen,presence_pen.txt", dataset='tacred')
+    test_from_examples_file("./generated/validate_examples.txt")

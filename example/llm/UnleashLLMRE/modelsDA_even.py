@@ -84,7 +84,7 @@ if __name__ == "__main__":
     '''
 
     model_id = "gpt-4o-mini-2024-07-18"  # gpt-4o-2024-11-20, gpt-4o-mini-2024-07-18, o4-mini-2025-04-16
-    total_gen = 5000  # total relation examples to be generated
+    total_gen = 2000  # total relation examples to be generated
     current_gen = 0
     print("Model id:", model_id)
 
@@ -119,14 +119,14 @@ if __name__ == "__main__":
                         # frequency_penalty=0.3,
                         # presence_penalty=0.6,
                         # max_tokens=3000,
-                        max_completion_tokens=2500,  # for newer models
+                        max_completion_tokens=2000,  # for newer models
                         timeout=30,  # 30 seconds timeout
                     )
                     decoded = response["choices"][0]["message"]["content"].strip()
                 except openai.error.Timeout as e:
                     print(f"⏰ Timeout for relation '{label}'. Skipping this pass.")
                     continue  # retry this label on the next loop pass
-                # print("🔹 Model Generated Output:\n", decoded)
+                print("🔹 Model Generated Output:\n", decoded)
                 res = decoded.split('\n')
 
                 gen_count = 0
