@@ -1,4 +1,4 @@
-from difflib import get_close_matches
+import difflib
 import re
 import json
 import os
@@ -46,239 +46,158 @@ def convert_token(token):
     return token
 
 
-def normalize_fragmented_fields(decoded, dataset='tacred'):
-    def clean_entity(entity, context):
-        s = entity.strip()
-        # Remove all trailing non-word, non-space, non-period chars, but preserve periods
-        s_core = re.sub(r'[^\w\s.]+$', '', s)
-        # Try context match: two, one, or no periods, but only if next char in context is not a word char
-        for period_count in (2, 1, 0):
-            candidate = s_core + ('.' * period_count)
-            pattern = re.escape(candidate) + r'(\W|$)'
-            if candidate and re.search(pattern, context):
-                return candidate
-        # If not in context, reduce trailing periods to max one (unless original expected two, but default to one)
-        m = re.match(r'^(.*?)(\.{1,})?$', s_core)
-        core = m.group(1)
-        trailing = m.group(2) if m.group(2) else ''
-        if trailing:
-            trailing = '.'  # Always reduce to one
-        # Remove all other trailing punctuation (except periods)
-        result = (core + trailing).strip()
-        result = re.sub(r'[^\w\s.]+$', '', result)
-        return result
-
-    # Normalize separators and noise
-    decoded = decoded.replace("：", ":")
-    decoded = re.sub(r"[*@#\^•]+", "", decoded)
-    decoded = re.sub(r"\s+", " ", decoded)
-    # Insert newline before every 'Relation:' not at start of line
-    decoded = re.sub(r"(?<!\n)(Relation\s*[:：])", r"\n\1", decoded, flags=re.IGNORECASE)
-
-    # Split on every new Relation field, so each block is a separate example
-    parts = re.split(r"\bRelation\s*[:：]", decoded, flags=re.IGNORECASE)
+def normalize_fragmented_fields(decoded, dataset='tacred', verbose=True):
+    headers = ['Relation', 'Context', 'Head Entity', 'Head Type', 'Tail Entity', 'Tail Type']
     outputs = []
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-        # Prepend so our regex can work as usual
-        text = "Relation: " + part
 
-        # field extraction using position indexing to avoid overlap/label confusion
-        field_labels = [
-            ("relation", "Relation"),
-            ("context", "Context"),
-            ("head_entity", "Head Entity"),
-            ("head_type", "Head Type"),
-            ("tail_entity", "Tail Entity"),
-            ("tail_type", "Tail Type"),
-        ]
-        found = {}
-        for m in re.finditer(r"(Relation|Context|Head Entity|Head Type|Tail Entity|Tail Type)\s*[:：]", text, re.IGNORECASE):
-            label = m.group(1)
-            start = m.end()
-            # Find end of this field (start of next label or end of string)
-            next_match = re.search(
-                r"(Relation|Context|Head Entity|Head Type|Tail Entity|Tail Type)\s*[:：]", text[start:], re.IGNORECASE
-            )
-            end = start + next_match.start() if next_match else len(text)
-            value = text[start:end].strip()
-            # Only use the first occurrence of each label
-            if label.lower() not in found:
-                found[label.lower()] = value
+    # splits BEFORE 'Relation' header, allowing for optional asterisks and whitespace
+    entry_pattern = r'(?<![a-zA-Z0-9_])[*]*\s*Relation\s*[*]*[\s:.\-：\*]+'
+    matches = list(re.finditer(entry_pattern, decoded, flags=re.IGNORECASE))
+    starts = [m.start() for m in matches]
+    starts.append(len(decoded))
+    raw_entries = []
+    for i in range(len(starts) - 1):
+        block = decoded[starts[i]:starts[i + 1]].strip()
+        if block:
+            raw_entries.append(block)
 
-        # Apply cleaning for each field
-        relation = found.get("relation", "").replace(" ", "").strip(" .。:：").lower()
-        context = found.get("context", "").strip()
-        head_entity = clean_entity(found.get("head entity", "").strip(), context)
-        head_type = re.sub(r"[^A-Z]", "", found.get("head type", "").upper())
-        # Find the 'Tail Entity' immediately before 'Tail Type'
-        tail_entity = ""
-        tail_entity_matches = list(
-            re.finditer(r"Tail Entity\s*[:：]\s*(.*?)(?=(Tail Type\s*[:：]|Head Entity\s*[:：]|Relation\s*[:：]|Context\s*[:：]|Head Type\s*[:：]|$))", text, re.IGNORECASE | re.DOTALL))
-        if tail_entity_matches:
-            tail_entity = tail_entity_matches[-1].group(1).strip()
+    # For each entry, robustly extract each header/value pair
+    def extract_field(entry, header, next_header=None):
+        # Accepts asterisks and whitespace before/after header
+        header_pattern = rf'[*]*\s*{header}\s*[*]*[\s:.\-：\*]*'
+        if next_header:
+            next_header_pattern = rf'[*]*\s*{next_header}\s*[*]*[\s:.\-：\*]*'
+            pattern = rf'{header_pattern}(.*?)(?={next_header_pattern}|$)'
         else:
-            tail_entity = found.get("tail entity", "").strip()
-        tail_entity = clean_entity(tail_entity, context)
+            pattern = rf'{header_pattern}(.*)'
+        match = re.search(pattern, entry, re.IGNORECASE | re.DOTALL)
+        if match:
+            val = match.group(1).strip()
+            # Collapse multiple trailing periods to one, for abbreviations (e.g. 'Inc..' -> 'Inc.')
+            if re.search(r'\.\.+$', val):
+                val = val.rstrip('.') + '.'
+            else:
+                val = val.rstrip('.')
+            # Remove surrounding quotes if present
+            val = val.strip('"').strip("'")
+            return val
+        return ""
 
-        # --- Fuzzy entity correction using context ---
-        from difflib import get_close_matches
-
-        def best_match_in_context(entity, context):
-            # Prefer candidates that match full words and are long enough
-            entity_words = entity.strip().split()
-            entity_len = len(entity_words)
-            context_words = context.strip().split()
-            candidates = []
-            for n in range(max(1, entity_len-2), entity_len+3):
-                for i in range(len(context_words) - n + 1):
-                    chunk = " ".join(context_words[i:i+n])
-                    candidates.append(chunk)
-            # Fuzzy match with difflib
-            matches = get_close_matches(entity, candidates, n=1, cutoff=0.7)
-            if matches:
-                # Return the match after removing trailing non-alphanum except one period
-                match = matches[0]
-                match = re.sub(r'[^\w\s]+$', '', match)
-                if (match + '.') in context:
-                    return match + '.'
-                return match
-            # fallback to cleaned entity
-            return clean_entity(entity, context)
-
-        # After cleaning, check for exact case-sensitive match first
-        if head_entity not in context:
-            corrected_head = best_match_in_context(head_entity, context)
-            if corrected_head:
-                head_entity = corrected_head
-
-        if tail_entity not in context:
-            corrected_tail = best_match_in_context(tail_entity, context)
-            if corrected_tail:
-                tail_entity = corrected_tail
-        tail_type = re.sub(r"[^A-Z]", "", found.get("tail type", "").upper())
-
-        # Context punctuation: end with period unless already ends with . .. ...
-        context = re.sub(r"\s+", " ", context)
-        if context and not re.search(r"\.\.\.$", context) and not re.search(r"\.\.$", context) and not re.search(r"\.$", context):
-            context += "."
-
-        # Fuzzy matching for relation and entity types
-        rel_types = relation_types.get(dataset, [])
-        ent_types = entity_types.get(dataset, [])
-
-        # match relation
-        if relation not in rel_types:
-            matches = get_close_matches(relation, rel_types, n=1, cutoff=0.7)
-            if matches:
-                relation = matches[0]
-        # match head_type
-        if head_type not in ent_types:
-            matches = get_close_matches(head_type, ent_types, n=1, cutoff=0.7)
-            if matches:
-                head_type = matches[0]
-        # match tail_type
-        if tail_type not in ent_types:
-            matches = get_close_matches(tail_type, ent_types, n=1, cutoff=0.7)
-            if matches:
-                tail_type = matches[0]
-
-        output = (
-            f"Relation: {relation}. Context: {context} "
-            f"Head Entity: {head_entity}. Head Type: {head_type}. "
-            f"Tail Entity: {tail_entity}. Tail Type: {tail_type}."
-        )
-        fields = dict(
-            relation=relation,
-            context=context,
-            head_entity=head_entity,
-            head_type=head_type,
-            tail_entity=tail_entity,
-            tail_type=tail_type,
-            text=output.strip()
-        )
-
-        # Only include output if all fields are present
-        if not all([relation, context, head_entity, head_type, tail_entity, tail_type]):
+    for raw_entry in raw_entries:
+        # Ignore garbage if not a true entry (e.g. if split left garbage before first header)
+        if not re.search(r'[*]*\s*Relation\s*[*]*[\s:.\-：\*]+', raw_entry, re.IGNORECASE):
             continue
-        outputs.append(fields)
+
+        fields = {}
+        for i, header in enumerate(headers):
+            next_header = headers[i + 1] if i + 1 < len(headers) else None
+            fields[header.lower()] = extract_field(raw_entry, header, next_header)
+
+        if not all(fields.values()):
+            if verbose:
+                print(f"[ERROR] Skipping incomplete block: {fields}")
+            continue
+
+        rel = fields['relation'].strip()
+        ctx = fields['context'].strip()
+        head_ent = fields['head entity'].strip()
+        head_type = fields['head type'].strip().upper()
+        tail_ent = fields['tail entity'].strip()
+        tail_type = fields['tail type'].strip().upper()
+
+        if head_type in {"MISCELLANEOUS", "MISC"}:
+            head_type = "MISC"
+        if tail_type in {"MISCELLANEOUS", "MISC"}:
+            tail_type = "MISC"
+
+        # Entity type validation: pick allowed types for this dataset (default to tacred)
+        allowed_types = entity_types.get(dataset, entity_types["tacred"])
+        if head_type not in allowed_types or tail_type not in allowed_types:
+            print(f"[ERROR] Invalid entity type: Head Type '{head_type}' or Tail Type '{tail_type}' not found in allowed types for dataset '{dataset}'.")
+            continue
+
+        # Entity-in-context span check (case-insensitive, stripped)
+        ctx_cmp = ctx.lower()
+        head_cmp = head_ent.lower()
+        tail_cmp = tail_ent.lower()
+        head_found = head_cmp in ctx_cmp
+        tail_found = tail_cmp in ctx_cmp
+        if not (head_found and tail_found):
+            print(f"[ERROR] Entity span not found in context. Head: '{head_ent}' or Tail: '{tail_ent}' not found in context: {ctx}")
+            continue
+
+        head_type_out = head_type.replace(' ', '_')
+        tail_type_out = tail_type.replace(' ', '_')
+        rel_out = rel.lower().strip()
+        text = (f"Relation: {rel_out}. Context: {ctx}. Head Entity: {head_ent}. "
+                f"Head Type: {head_type_out}. Tail Entity: {tail_ent}. Tail Type: {tail_type_out}.")
+        outputs.append({
+            "relation": rel_out,
+            "context": ctx,
+            "head_entity": head_ent,
+            "head_type": head_type,
+            "tail_entity": tail_ent,
+            "tail_type": tail_type,
+            "text": text
+        })
+        if verbose:
+            print("[DEBUG] Parsed block:")
+            print(" ", fields)
+            print("  → Output text:", text)
+            print("")
 
     return outputs
 
 
 # extract the relation label and entity information matching the dataset format (e.g., tacred, retacred, tacrev)
-def construct_relation(rel, label, datasetname, verbose=True):
+def construct_relation(rel, label, datasetname='tacred'):
     # Takes each output of normalize_fragmented_fields() as input rel
-    if not rel or not isinstance(rel, dict):
-        if verbose:
-            print(f"[construct_relation] Skipping: input is None or not a dict: {rel}")
-        return
-
+    # Compare after stripping trailing periods to avoid mismatches due to punctuation
     if rel["relation"] != label:
-        if verbose:
-            print(f"[construct_relation] Skipping: relation '{rel['relation']}' != target label '{label}'")
         return
+    DAdata = {'text': rel["context"]}
 
-    DAdata = {
-        'text': rel["context"]
-    }
-
-    def validate_type(type_val, typeset, field):
-        t_upper = type_val.upper()
-        if (
-                type_val in typeset
-                or type_val.replace('_', ' ') in typeset
-                or t_upper == "MISCELLANEOUS"
-                or t_upper == "MISC"
-        ):
-            return "MISC" if t_upper in ("MISCELLANEOUS", "MISC") else type_val.upper().replace(" ", "_")
-        else:
-            if verbose:
-                print(f"[construct_relation] Invalid {field} type: '{type_val}' not in {typeset}")
-            return None
+    # find the entity span in the context
+    def find_entity_span(entity, context):
+        # Try as-is (case-insensitive)
+        ent = entity.strip()
+        ctx = context
+        ctx_lower = ctx.lower()
+        ent_var = ent
+        while True:
+            ent_var_strip = ent_var.strip()
+            if not ent_var_strip:
+                break
+            ent_var_lower = ent_var_strip.lower()
+            idx = ctx_lower.find(ent_var_lower)
+            if idx != -1:
+                matched_text = ctx[idx:idx + len(ent_var_strip)]
+                # Only remove trailing period if it's not part of the original entity
+                if matched_text.endswith('.') and not entity.strip().endswith('.'):
+                    matched_text = matched_text[:-1]
+                end_idx = idx + len(matched_text)
+                return idx, end_idx, matched_text
+            # Remove trailing periods and try again
+            ent_var = re.sub(r"\.*$", "", ent_var_strip)
+            if ent_var == ent_var_strip:
+                break  # No more trailing periods to remove
+        return -1, -1, None
 
     # head entity and type
     head = rel["head_entity"]
-    headtype = validate_type(rel["head_type"], entity_types[datasetname], "head")
-    if not headtype:
-        if verbose:
-            print(f"[construct_relation] Example: {rel}")
-        return
+    headtype = rel["head_type"]
     DAdata["subj_type"] = headtype
-
     # tail entity and type
     tail = rel["tail_entity"]
-    tailtype = validate_type(rel["tail_type"], entity_types[datasetname], "tail")
-    if not tailtype:
-        if verbose:
-            print(f"[construct_relation] Example: {rel}")
-        return
+    tailtype = rel["tail_type"]
     DAdata["obj_type"] = tailtype
 
-    # head and tail positions (case-insensitive matching, returns first occurrence)
-    textlower = rel["context"].lower()
-    headlower = head.lower()
-    if headlower in textlower:
-        hpos1 = textlower.index(headlower)
-        hpos2 = hpos1 + len(headlower)
-        truehead = rel["context"][hpos1:hpos2]
-    else:
-        if verbose:
-            print(f"[construct_relation] Head entity '{head}' not found in context: {rel['context']}")
-            print(f"Example: {rel}")
+    # find head and tail entity spans and values
+    hpos1, hpos2, truehead = find_entity_span(head, rel["context"])
+    if hpos1 == -1 or truehead is None:
         return
-
-    taillower = tail.lower()
-    if taillower in textlower:
-        tpos1 = textlower.index(taillower)
-        tpos2 = tpos1 + len(taillower)
-        truetail = rel["context"][tpos1:tpos2]
-    else:
-        if verbose:
-            print(f"[construct_relation] Tail entity '{tail}' not found in context: {rel['context']}")
-            print(f"Example: {rel}")
+    tpos1, tpos2, truetail = find_entity_span(tail, rel["context"])
+    if tpos1 == -1 or truetail is None:
         return
 
     DAdata["subj"] = truehead
@@ -290,53 +209,32 @@ def construct_relation(rel, label, datasetname, verbose=True):
     return DAdata
 
 
-# Test normalize_fragmented_fields against hand picked examples
-def test_from_examples_file(input_path):
-    with open(input_path, 'r', encoding='utf-8') as f:
-        content = f.read()
+def normalize_and_construct(raw_text, target_label, dataset='tacred', verbose=False):
+    """
+    Normalize raw relation extraction text and construct relation dicts matching target_label.
 
-    # Separate model input and expected output
-    input_section = re.search(r"Input examples:(.*)Expected output:", content, re.DOTALL)
-    expected_section = re.search(r"Expected output:(.*)", content, re.DOTALL)
+    Args:
+        raw_text (str): Raw input text containing relation blocks.
+        target_label (str): Relation label to filter by, e.g., 'org:country_of_headquarters'.
+        dataset (str): Dataset name for canonicalization, default 'tacred'.
+        verbose (bool): If True, prints debug info.
 
-    if not input_section or not expected_section:
-        print("❌ Failed to parse input or expected output sections.")
-        return
-
-    input_text = input_section.group(1).strip()
-    expected_text = expected_section.group(1).strip()
-    expected_lines = [
-        re.sub(
-            r"(Head Type:|Tail Type:)\s*(\w+)",
-            lambda m: f"{m.group(1)} {m.group(2).upper()}",
-            line.strip()
-        )
-        for line in expected_text.splitlines() if line.strip()
-    ]
-
-    normalized = normalize_fragmented_fields(input_text)
-    generated_lines = [entry["text"].strip() for entry in normalized]
-
-    print("--- TEST RESULTS ---")
-    passed = True
-
-    for i, (gen, exp) in enumerate(zip(generated_lines, expected_lines)):
-        print(f"\n--- Example {i + 1} ---")
-        if gen != exp:
-            passed = False
-            print(f"❌ Mismatch")
-        else:
-            print(f"✅ Match")
-        print(f"Expected output : {exp}")
-        print(f"Generated output: {gen}")
-    if len(generated_lines) != len(expected_lines):
-        passed = False
-        print(f"\n❌ Number of outputs mismatch. Expected {len(expected_lines)}, got {len(generated_lines)}")
-
-    if passed:
-        print("\n✅ All normalized outputs match expected results.")
-    else:
-        print("\n❌ Some outputs did not match expected.")
+    Returns:
+        List[dict]: List of constructed relation dicts with keys:
+            'text', 'subj_type', 'obj_type', 'subj', 'subj_start', 'subj_end',
+            'obj', 'obj_start', 'obj_end', 'relation'
+    """
+    normalized_entries = normalize_fragmented_fields(raw_text, dataset=dataset, verbose=verbose)
+    constructed_relations = []
+    for entry in normalized_entries:
+        if verbose:
+            print(f"Processing entry with relation: {entry['relation']}")
+        constructed = construct_relation(entry, target_label, datasetname=dataset)
+        if constructed:
+            constructed_relations.append(constructed)
+        elif verbose:
+            print(f"Entry relation {entry['relation']} does not match target {target_label} or failed span matching.")
+    return constructed_relations
 
 
 # test normalize_fragmented_fields
@@ -405,18 +303,27 @@ def test_from_examples_file(input_path):
 
     input_text = input_section.group(1).strip()
     expected_text = expected_section.group(1).strip()
-    expected_lines = [line.strip() for line in expected_text.splitlines() if line.strip()]
+    expected_lines = [
+        re.sub(
+            r"(Head Type:|Tail Type:)\s*(\w+)",
+            lambda m: f"{m.group(1)} {m.group(2).upper()}",
+            line.strip()
+        )
+        for line in expected_text.splitlines() if line.strip()
+    ]
 
     normalized = normalize_fragmented_fields(input_text)
     generated_lines = [entry["text"].strip() for entry in normalized]
 
     print("--- TEST RESULTS ---")
+    print(f"\n[DEBUG] Generated {len(generated_lines)} outputs from {len(expected_lines)} expected.")
+    if len(generated_lines) == 0:
+        print("[DEBUG] No outputs! Printing normalized field dictionaries for inspection:")
+        for entry in normalized:
+            print(entry)
     passed = True
-    input_blocks = [blk.strip() for blk in re.split(r"\n\s*\n", input_text) if blk.strip()]
     for i, (gen, exp) in enumerate(zip(generated_lines, expected_lines)):
         print(f"\n--- Example {i + 1} ---")
-        if i < len(input_blocks):
-            print(f"Input example:\n{input_blocks[i]}")
         if gen != exp:
             passed = False
             print(f"❌ Mismatch")
@@ -437,4 +344,27 @@ def test_from_examples_file(input_path):
 
 if __name__ == '__main__':
     test_from_terminal_file("./generated/terminal_output-varying_temp,freq_pen,presence_pen.txt", dataset='tacred')
-    test_from_examples_file("./generated/validate_examples.txt")
+    # test_from_examples_file("./generated/validate_examples (do not edit this file).txt")
+
+    raw_input = """
+Relation: org:country_of_headquarters. Context: The International Monetary Fund is located in Washington D.C., United States, where it provides financial advice and support to countries worldwide. Head Entity: International Monetary Fund.. Head Type: ORGANIZATION. Tail Entity: United States. Tail Type: COUNTRY.  
+Relation: org:country_of_headquarters. Context: The United Nations Educational, Scientific and Cultural Organization (UNESCO) has its headquarters in Paris, France, focusing on education and cultural preservation globally. Head Entity: UNESCO. Head Type: ORGANIZATION. Tail Entity: France. Tail Type: COUNTRY.  
+Relation: org:country_of_headquarters. Context: Samsung Electronics operates from Suwon, South Korea, where it develops various electronic products and technologies. Head Entity: Samsung Electronics. Head Type: ORGANIZATION. Tail Entity: South Korea. Tail Type: COUNTRY.  
+Relation: org:country_of_headquarters. Context: The international non-profit organization Amnesty International is headquartered in London, England, advocating for human rights around the world. Head Entity: Amnesty International. Head Type: ORGANIZATION. Tail Entity: England. Tail Type: COUNTRY.
+Relation: org:country_of_headquarters. Context: The famous fashion brand Gucci is based in Florence, Italy, where it creates luxury goods that are recognized worldwide.
+Head Entity: Gucci.
+Head Type: ORGANIZATION.
+Tail Entity: Italy.
+Tail Type: COUNTRY.
+Relation: org:country_of_headquarters. Context:The global banking giant HSBC Holdings plc has its headquarters located in London, United Kingdom, providing financial services around the globe.
+Head Entity : HSBC Holdings plc.
+Head Type : ORGANIZATION.
+Tail Entity : United Kingdom.
+Tail Type : COUNTRY.
+ """
+
+    target = "org:country_of_headquarters"
+    results = normalize_and_construct(raw_input, target, verbose=True)
+
+    for res in results:
+        print(json.dumps(res, ensure_ascii=False))

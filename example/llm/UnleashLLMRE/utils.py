@@ -338,8 +338,8 @@ def generate_skewed_dataset(orig_paths, total_gen, exclude_no_relation=False):
 
 if __name__ == '__main__':
     # DA file paths
-    gen_path = "./generated/tacred/generated_gpt4omini_even.json"  # TACRED, TACREV, or Re-TACRED dataset format
-    tac_path = "./tacred/train_35161.json"
+    gen_path = "./generated/tacred/train_20250601_2211.json"  # TACRED, TACREV, or Re-TACRED dataset format
+    tac_path = "./tacred/train_20000.json"
     gpt4o, gpt45preview, gpt41, gpt4o0806, gpt4omini, o4mini, o3mini, gpt41mini, gpt41nano = (
         "./tacred/skewed/train_gpt4o_multi_1000.json", "./tacred/skewed/train_gpt45preview_multi_1000.json", "to be generated",
         "to be generated", "./tacred/skewed/train_gpt4omini_multi_1000.json", "./tacred/skewed/train_o4mini_multi_1000.json",
@@ -348,8 +348,8 @@ if __name__ == '__main__':
 
     # convert_generated_to_tac(gen_path, "gpt-4o-mini-2024-07-18")  # remenber to change model id for differet models
     # generate_skewed_dataset([tac_path], total_gen=35161)
-    # merge_datasets(["./tacred/skewed/train_gpt4o+4omini+5more_32963.json",tac_path], limit=None)
-    # count_relation_stats(tac_path, sort_by_count=True, sample_num=None, sample_method="seq", out_file="./generated/relation_stats.json")  # count stats of the dataset
+    # merge_datasets(["./tacred/skewed/train_gpt4omini_merged_10000.json",tac_path], limit=None)
+    count_relation_stats(gen_path, sort_by_count=True, sample_num=None, sample_method="seq", out_file="./generated/relation_stats.json")  # count stats of the dataset
     # relations_gen_count(15000, "tacred")
     # plot("./generated/relation_stats.json")  # plot relation frequencies
 

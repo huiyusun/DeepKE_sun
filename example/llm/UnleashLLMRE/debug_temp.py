@@ -2,109 +2,153 @@ import difflib
 import re
 import json
 import os
+import re
+
+entity_types = {
+    "tacrev": ['URL', 'LOCATION', 'IDEOLOGY', 'CRIMINAL CHARGE', 'TITLE', 'STATE OR PROVINCE', 'DATE', 'PERSON', 'NUMBER', 'CITY', 'DURATION', 'CAUSE OF DEATH', 'COUNTRY', 'NATIONALITY',
+               'RELIGION', 'ORGANIZATION', 'MISC'],
+    # "SciERC": ['Generic', 'Material', 'Method', 'Metric', 'OtherScientificTerm', 'Task'],
+    "retacred": ['IDEOLOGY', 'ORGANIZATION', 'URL', 'PERSON', 'DURATION', 'COUNTRY', 'LOCATION', 'NATIONALITY', 'TITLE', 'RELIGION', 'NUMBER', 'CITY', 'CAUSE OF DEATH', 'DATE',
+                 'STATE OR PROVINCE', 'CRIMINAL CHARGE'],
+    "tacred": ['COUNTRY', 'IDEOLOGY', 'LOCATION', 'DATE', 'PERSON', 'NATIONALITY', 'RELIGION', 'CITY', 'MISC', 'CAUSE OF DEATH', 'TITLE', 'URL', 'NUMBER', 'ORGANIZATION',
+               'STATE OR PROVINCE', 'DURATION', 'CRIMINAL CHARGE']
+}
+
+relation_types = {
+    "tacred": ['no_relation', 'per:title', 'org:top_members/employees', 'per:employee_of', 'org:alternate_names', 'org:country_of_headquarters', 'per:countries_of_residence', 'per:age',
+               'org:city_of_headquarters', 'per:cities_of_residence', 'per:stateorprovinces_of_residence', 'per:origin', 'org:subsidiaries', 'org:parents', 'per:spouse',
+               'org:stateorprovince_of_headquarters', 'per:children', 'per:other_family', 'org:members', 'per:siblings', 'per:parents', 'per:schools_attended', 'per:date_of_death',
+               'org:founded_by', 'org:member_of', 'per:cause_of_death', 'org:website', 'org:political/religious_affiliation', 'per:alternate_names', 'org:founded', 'per:city_of_death',
+               'org:shareholders', 'org:number_of_employees/members', 'per:charges', 'per:city_of_birth', 'per:date_of_birth', 'per:religion', 'per:stateorprovince_of_death',
+               'per:stateorprovince_of_birth', 'per:country_of_birth', 'org:dissolved', 'per:country_of_death'],
+    "retacred": ['no_relation', 'per:title', 'org:top_members/employees', 'per:employee_of', 'org:alternate_names', 'org:country_of_headquarters', 'per:countries_of_residence', 'per:age',
+                 'org:city_of_headquarters', 'per:cities_of_residence', 'per:stateorprovinces_of_residence', 'per:origin', 'org:subsidiaries', 'org:parents', 'per:spouse',
+                 'org:stateorprovince_of_headquarters', 'per:children', 'per:other_family', 'org:members', 'per:siblings', 'per:parents', 'per:schools_attended', 'per:date_of_death',
+                 'org:founded_by', 'org:member_of', 'per:cause_of_death', 'org:website', 'org:political/religious_affiliation', 'per:alternate_names', 'org:founded', 'per:city_of_death',
+                 'org:shareholders', 'org:number_of_employees/members', 'per:charges', 'per:city_of_birth', 'per:date_of_birth', 'per:religion', 'per:stateorprovince_of_death',
+                 'per:stateorprovince_of_birth', 'per:country_of_birth', 'org:dissolved', 'per:country_of_death']
+}
 
 
-def normalize_fragmented_fields(decoded, dataset='tacred'):
-    def strip_all_trailing_punct_special(s):
-        s = s.rstrip()
-        abbreviations = [
-            "Inc.", "Co.", "Ltd.", "Corp.", "Dr.", "Mr.", "Ms.", "Mrs.", "Jr.", "Sr.", "St.", "Mt.",
-            "U.S.", "U.K.", "U.N.", "U.A.E.", "Ph.D.", "M.D.", "B.A.", "B.S.", "M.A.", "M.S.", "Prof."
-        ]
-        # Find how many trailing periods etc.
-        m = re.match(r"^(.*?)([.。;]+)?$", s)
-        if m:
-            core, punct = m.groups()
-            punct = punct or ""
-            # If the core matches a known abbreviation (with or without trailing dot), preserve up to two periods
-            for abbr in abbreviations:
-                abbr_base = abbr[:-1]
-                if core.strip().lower() == abbr.lower() or core.strip().lower() == abbr_base.lower():
-                    return core.strip() + punct[:2]
-            # Otherwise, for all others, remove all trailing punctuation
-            return core.strip()
-        return s.strip()
+def normalize_fragmented_fields(decoded, dataset='tacred', verbose=True):
+    # All possible field headers (variants included for noise)
+    header_map = {
+        'RELATION': [r'relation[\s:]*'],
+        'CONTEXT': [r'context[\s:]*'],
+        'HEAD_ENTITY': [r'head\s*entity[\s:]*'],
+        'HEAD_TYPE': [r'head\s*type[\s:]*'],
+        'TAIL_ENTITY': [r'tail\s*entity[\s:]*'],
+        'TAIL_TYPE': [r'tail\s*type[\s:]*'],
+    }
 
-    # Normalize separators and noise
-    decoded = decoded.replace("：", ":")
-    decoded = re.sub(r"[*@#\^•]+", "", decoded)
-    decoded = re.sub(r"\s+", " ", decoded)
-    # Insert newline before every 'Relation:' not at start of line
-    decoded = re.sub(r"(?<!\n)(Relation\s*[:：])", r"\n\1", decoded, flags=re.IGNORECASE)
+    # Build a big regex to match any header, case-insensitive
+    header_patterns = []
+    for field, variants in header_map.items():
+        for variant in variants:
+            header_patterns.append(f'(?P<{field}>{variant})')
+    header_regex = re.compile('|'.join(header_patterns), re.IGNORECASE)
 
-    # Split on every new Relation field, so each block is a separate example
-    parts = re.split(r"\bRelation\s*[:：]", decoded, flags=re.IGNORECASE)
+    # Find all header positions
+    matches = list(header_regex.finditer(decoded))
+    if not matches:
+        return []
+
     outputs = []
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-        # Prepend so our regex can work as usual
-        text = "Relation: " + part
+    rel_indices = [i for i, m in enumerate(matches) if m.lastgroup == 'RELATION']
 
-        # Robust field extraction using position indexing to avoid overlap/label confusion
-        field_labels = [
-            ("relation", "Relation"),
-            ("context", "Context"),
-            ("head_entity", "Head Entity"),
-            ("head_type", "Head Type"),
-            ("tail_entity", "Tail Entity"),
-            ("tail_type", "Tail Type"),
-        ]
-        found = {}
-        for m in re.finditer(r"(Relation|Context|Head Entity|Head Type|Tail Entity|Tail Type)\s*[:：]", text, re.IGNORECASE):
-            label = m.group(1)
-            start = m.end()
-            # Find end of this field (start of next label or end of string)
-            next_match = re.search(
-                r"(Relation|Context|Head Entity|Head Type|Tail Entity|Tail Type)\s*[:：]", text[start:], re.IGNORECASE
-            )
-            end = start + next_match.start() if next_match else len(text)
-            value = text[start:end].strip()
-            # Only use the first occurrence of each label
-            if label.lower() not in found:
-                found[label.lower()] = value
+    def clean_field(s, kind):
+        # --- Normalize whitespace and punctuation ---
+        s = s.replace('\n', ' ').replace('。', '.').replace('：', ':')
+        s = ' '.join(s.split())
+        # --- Remove leading junk and field headers in one go ---
+        s = re.sub(r'^[\s\*\&\^,;:\.]+', '', s)
+        s = re.sub(r'^(head entity|tail entity|head type|tail type|entity|head|tail|relation|context)[\s\*\&\^,;:\.]*', '', s, flags=re.IGNORECASE)
+        # --- Remove trailing junk ---
+        s = re.sub(r'[\s\*\&\^,;:]+$', '', s)
+        # --- Remove markdown everywhere except context ---
+        if kind != "context":
+            s = re.sub(r'(\*\*|\*|`|_)', '', s)
+        s = s.strip()
+        # --- Relation label normalization ---
+        if kind == "relation":
+            valid_labels = relation_types.get(dataset, [])
+            cleaned = s.replace(' ', '').replace('\n', '').lower().rstrip('.')
+            import difflib
+            best = difflib.get_close_matches(cleaned, [lbl.replace(' ', '').lower() for lbl in valid_labels], n=1, cutoff=0.80)
+            if best:
+                idx = [lbl.replace(' ', '').lower() for lbl in valid_labels].index(best[0])
+                match = valid_labels[idx]
+                return match + '.'
+            idx = s.find('.')
+            if idx >= 0:
+                return s[:idx + 1]
+            return s
+        # --- Type label normalization ---
+        if kind == "type":
+            s = s.upper().strip()
+            valid_types = ['PERSON', 'ORGANIZATION', 'TITLE', 'CAUSE OF DEATH']
+            for vt in valid_types:
+                if vt in s:
+                    return vt
+            return s
+        # --- Entity field: collapse terminal periods unless abbreviation ---
+        if kind in ("entity", "tail_entity", "head_entity"):
+            if re.search(r'(\b[A-Z][a-zA-Z]*\.)\.$', s) or re.search(r'\bInc\.\.$', s) or re.search(r'\bCorp\.\.$', s):
+                pass
+            else:
+                s = re.sub(r'\.{2,}$', '.', s)
+        # --- Context: preserve all periods, just ensure one at end ---
+        if kind == "context":
+            if not s.endswith('.'):
+                s += '.'
+        return s
 
-        # Apply your normal cleaning for each field
-        relation = found.get("relation", "").replace(" ", "").strip(" .。:：").lower()
-        context = found.get("context", "").strip()
-        head_entity = strip_all_trailing_punct_special(found.get("head entity", "").strip())
-        head_type = re.sub(r"[^A-Z]", "", found.get("head type", "").upper())
-        # Find the 'Tail Entity' immediately before 'Tail Type'
-        tail_entity = ""
-        tail_entity_matches = list(
-            re.finditer(r"Tail Entity\s*[:：]\s*(.*?)(?=(Tail Type\s*[:：]|Head Entity\s*[:：]|Relation\s*[:：]|Context\s*[:：]|Head Type\s*[:：]|$))", text, re.IGNORECASE | re.DOTALL))
-        if tail_entity_matches:
-            tail_entity = tail_entity_matches[-1].group(1).strip()
+    def ensure_period(s):
+        s = s.strip()
+        return s if s.endswith('.') else s + '.'
+
+    for ex_idx, rel_idx in enumerate(rel_indices):
+        start = matches[rel_idx].start()
+        end = matches[rel_indices[ex_idx + 1]].start() if ex_idx + 1 < len(rel_indices) else len(decoded)
+        block = decoded[start:end]
+        # Find headers inside this block (ordered)
+        block_matches = list(header_regex.finditer(block))
+        field_positions = []
+        for m in block_matches:
+            field_positions.append((m.lastgroup, m.start(), m.end()))
+        # Extract field values between each header
+        fields = {}
+        for i, (fname, s, e) in enumerate(field_positions):
+            next_start = field_positions[i + 1][1] if i + 1 < len(field_positions) else len(block)
+            val = block[e:next_start]
+            # Only truncate at header marker if not context field
+            if fname not in ['CONTEXT']:
+                val = re.split(r'(head entity|tail entity|head type|tail type|entity|head|tail|relation|context)[\s:]*', val, flags=re.IGNORECASE)[0]
+            val = val.lstrip('\n ').replace('\n', ' ')
+            # Clean both leading and trailing junk
+            val = clean_field(val, fname.lower())
+            fields[fname] = val
+        # Ensure all fields present
+        field_order = ['RELATION', 'CONTEXT', 'HEAD_ENTITY', 'HEAD_TYPE', 'TAIL_ENTITY', 'TAIL_TYPE']
+        if all(f in fields and fields[f].strip() for f in field_order):
+            rel = clean_field(fields['RELATION'], "relation")
+            ctx = ensure_period(clean_field(fields['CONTEXT'], "context"))
+            head_ent = ensure_period(clean_field(fields['HEAD_ENTITY'], "entity"))
+            tail_ent = ensure_period(clean_field(fields['TAIL_ENTITY'], "entity"))
+            head_type = ensure_period(clean_field(fields['HEAD_TYPE'], "type"))
+            tail_type = ensure_period(clean_field(fields['TAIL_TYPE'], "type"))
+            output = (f"Relation: {ensure_period(rel)} Context: {ctx} Head Entity: {head_ent} Head Type: {head_type} Tail Entity: {tail_ent} Tail Type: {tail_type}")
+            outputs.append(dict(
+                relation=rel,
+                context=ctx,
+                head_entity=head_ent,
+                head_type=head_type,
+                tail_entity=tail_ent,
+                tail_type=tail_type,
+                text=output.strip()
+            ))
         else:
-            # Fallback: use old method if no match
-            tail_entity = found.get("tail entity", "").strip()
-        tail_entity = strip_all_trailing_punct_special(tail_entity)
-        tail_type = re.sub(r"[^A-Z]", "", found.get("tail type", "").upper())
-
-        # Context punctuation: end with period unless already ends with . .. ...
-        context = re.sub(r"\s+", " ", context)
-        if context and not re.search(r"\.\.\.$", context) and not re.search(r"\.\.$", context) and not re.search(r"\.$", context):
-            context += "."
-
-        output = (
-            f"Relation: {relation}. Context: {context} "
-            f"Head Entity: {head_entity}. Head Type: {head_type}. "
-            f"Tail Entity: {tail_entity}. Tail Type: {tail_type}."
-        )
-        fields = dict(
-            relation=relation,
-            context=context,
-            head_entity=head_entity,
-            head_type=head_type,
-            tail_entity=tail_entity,
-            tail_type=tail_type,
-            text=output.strip()
-        )
-        # Only include output if at least relation and context are present
-        if not (relation and context):
-            continue
-        outputs.append(fields)
+            print(f"\n[normalize] Example {ex_idx + 1} skipped, missing fields: {[f for f in field_order if f not in fields or not fields[f].strip()]}")
     return outputs
 
 
@@ -136,8 +180,12 @@ def test_from_examples_file(input_path):
     generated_lines = [entry["text"].strip() for entry in normalized]
 
     print("--- TEST RESULTS ---")
+    print(f"\n[DEBUG] Generated {len(generated_lines)} outputs from {len(expected_lines)} expected.")
+    if len(generated_lines) == 0:
+        print("[DEBUG] No outputs! Printing normalized field dictionaries for inspection:")
+        for entry in normalized:
+            print(entry)
     passed = True
-
     for i, (gen, exp) in enumerate(zip(generated_lines, expected_lines)):
         print(f"\n--- Example {i + 1} ---")
         if gen != exp:
@@ -147,6 +195,7 @@ def test_from_examples_file(input_path):
             print(f"✅ Match")
         print(f"Expected output : {exp}")
         print(f"Generated output: {gen}")
+
     if len(generated_lines) != len(expected_lines):
         passed = False
         print(f"\n❌ Number of outputs mismatch. Expected {len(expected_lines)}, got {len(generated_lines)}")
@@ -158,4 +207,4 @@ def test_from_examples_file(input_path):
 
 
 if __name__ == '__main__':
-    test_from_examples_file("./generated/validate_examples.txt")
+    test_from_examples_file("./generated/validate_examples (do not edit this file).txt")
