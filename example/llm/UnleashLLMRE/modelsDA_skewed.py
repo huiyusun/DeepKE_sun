@@ -28,16 +28,21 @@ def best_fuzzy_span(tokens, target_tokens, threshold=0.8):
     n = len(target_tokens)
     for i in range(len(tokens) - n + 1):
         window = tokens[i:i + n]
-        scores = [
-            SequenceMatcher(None, t1, t2).ratio()
-            for t1, t2 in zip(window, target_tokens)
-        ]
+        scores = []
+        for t1, t2 in zip(window, target_tokens):
+            t1_lower, t2_lower = t1.lower(), t2.lower()  # case insensitive matching
+            if t1_lower.isdigit() and t2_lower.startswith(t1_lower):  # matches digits, e.g. 82 matches 82nd
+                scores.append(1.0)
+            elif t2_lower.isdigit() and t1_lower.startswith(t2_lower):
+                scores.append(1.0)
+            else:
+                scores.append(SequenceMatcher(None, t1_lower, t2_lower).ratio())
         avg_score = sum(scores) / n
         if avg_score > best_score:
             best_score = avg_score
             best_span = (i, i + n - 1)
     if best_score >= threshold:
-        return (*best_span, best_score)
+        return *best_span, best_score
     return None
 
 
@@ -46,7 +51,6 @@ def convert_generated_to_tac(data, model_id):
     Convert a single generated data dictionary to TACRED format as a JSON string.
     Returns: json_string if conversion succeeded, else None
     """
-
     tokens = [token.text for token in nlp(data["text"])]
 
     try:
@@ -145,8 +149,8 @@ if __name__ == "__main__":
 
     # 250k tokens family: gpt-4o-2024-11-20, gpt-4.5-preview-2025-02-27, gpt-4.1-2025-04-14, gpt-4o-2024-08-06
     # 2.5M tokens family: gpt-4o-mini-2024-07-18, o4-mini-2025-04-16, gpt-4.1-mini-2025-04-14, o3-mini-2025-01-31, gpt-4.1-nano-2025-04-14
-    model_id = "gpt-4o-mini-2024-07-18"
-    total_est_gen = 3000  # total relation examples to be generated (estimated)
+    model_id = "gpt-4o-2024-11-20"
+    total_est_gen = 2200  # total relation examples to be generated (estimated)
     generation_counts = relations_gen_count(total_est_gen, datasetname)  # calculate number of examples to be generated per relation type
     relation_totals = {k: 0 for k in generation_counts}
     total_gen = sum(generation_counts.values())

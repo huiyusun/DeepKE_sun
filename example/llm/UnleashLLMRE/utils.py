@@ -13,7 +13,7 @@ nlp = spacy.load("en_core_web_sm")
 
 
 # convert the LLM generated DA outputs to the data format of the original TACRED, TACREV or Re-TACRED
-def convert_generated_to_tac(input_path, model):
+def convert_generated_to_tac(input_path, model, dist="skewed"):
     print("generating new data examples:")
     doc = os.path.basename(input_path).replace('.json', '')
     converted = []
@@ -56,7 +56,7 @@ def convert_generated_to_tac(input_path, model):
 
     new_converted = [ex for ex in converted]
     filename = os.path.basename(input_path).replace("generated", "train").replace(".json", f"_{len(converted)}.json")
-    output_path = os.path.join("./tacred/skewed/", filename)
+    output_path = os.path.join(f"./tacred/{dist}/", filename)
     with open(output_path, 'w') as fout:
         json.dump(new_converted, fout, indent=2)
     print(f"Saved {len(new_converted)} new converted examples to {output_path}")
@@ -338,18 +338,19 @@ def generate_skewed_dataset(orig_paths, total_gen, exclude_no_relation=False):
 
 if __name__ == '__main__':
     # DA file paths
-    gen_path = "./generated/tacred/train_20250601_2211.json"  # TACRED, TACREV, or Re-TACRED dataset format
-    tac_path = "./tacred/train_20000.json"
+    gen_path = "./generated/tacred/train_gpt4omini_0603_10000.json"  # TACRED, TACREV, or Re-TACRED dataset format
+    tac_dir = "/Users/huiyu/Documents/pycharmProjects2025/RE_improved_baseline_sun/data/tacred/skewed/"
+    tac_path = tac_dir + "train_gpt4omini_merged_68124.json"
     gpt4o, gpt45preview, gpt41, gpt4o0806, gpt4omini, o4mini, o3mini, gpt41mini, gpt41nano = (
         "./tacred/skewed/train_gpt4o_multi_1000.json", "./tacred/skewed/train_gpt45preview_multi_1000.json", "to be generated",
         "to be generated", "./tacred/skewed/train_gpt4omini_multi_1000.json", "./tacred/skewed/train_o4mini_multi_1000.json",
         "./tacred/skewed/train_o3mini_multi_1000.json", "./tacred/skewed/train_gpt41mini_multi_1000.json", "./tacred/skewed/train_gpt41nano_multi_1000.json")
     multi_models = [gpt4o, gpt4omini, o4mini, gpt41mini, gpt41nano, o3mini, gpt45preview]  # for multiGPTs: 1000 examples from each model
 
-    # convert_generated_to_tac(gen_path, "gpt-4o-mini-2024-07-18")  # remenber to change model id for differet models
-    # generate_skewed_dataset([tac_path], total_gen=35161)
-    # merge_datasets(["./tacred/skewed/train_gpt4omini_merged_10000.json",tac_path], limit=None)
-    count_relation_stats(gen_path, sort_by_count=True, sample_num=None, sample_method="seq", out_file="./generated/relation_stats.json")  # count stats of the dataset
+    # convert_generated_to_tac(gen_path, "gpt-4o-mini-2024-07-18", dist="skewed")  # remenber to change model id for differet models
+    generate_skewed_dataset([tac_path], total_gen=30000)
+    # merge_datasets([tac_dir + "train_gpt4omini_0605_14001_4129.json", tac_path], limit=None)
+    # count_relation_stats(gen_path, sort_by_count=True, sample_num=None, sample_method="seq", out_file="./generated/relation_stats.json")  # count stats of the dataset
     # relations_gen_count(15000, "tacred")
     # plot("./generated/relation_stats.json")  # plot relation frequencies
 
