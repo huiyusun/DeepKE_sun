@@ -364,7 +364,7 @@ if __name__ == '__main__':
     # convert_generated_to_tac(gen_path, "gpt-4o-mini-2024-07-18", dist="skewed")  # remenber to change model id for differet models
     # generate_skewed_dataset([tac_path], total_gen=25000)
     # merge_datasets([tac_dir + "train_0610_19002.json", tac_path], limit=None)
-    generate_skewed_and_merge(tac_dir + "train.json", gen_dir + "train_0614_68124.json", 34062, 34062)
+    generate_skewed_and_merge(tac_dir + "train.json", gen_dir + "train_0614_68124.json", 500, 500)
     # count_relation_stats(gen_path, sort_by_count=True, sample_num=None, sample_method="seq", out_file="./generated/relation_stats.json")  # count stats of the dataset
     # relations_gen_count(15000, "tacred")
     # plot("./generated/relation_stats.json")  # plot relation frequencies

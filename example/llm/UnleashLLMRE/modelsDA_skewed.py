@@ -150,7 +150,7 @@ if __name__ == "__main__":
     # 250k tokens family: gpt-4o-2024-11-20, gpt-4.5-preview-2025-02-27, gpt-4.1-2025-04-14, gpt-4o-2024-08-06
     # 2.5M tokens family: gpt-4o-mini-2024-07-18, o4-mini-2025-04-16, gpt-4.1-mini-2025-04-14, o3-mini-2025-01-31, gpt-4.1-nano-2025-04-14
     model_id = "gpt-4o-mini-2024-07-18"
-    total_est_gen = 24000  # total relation examples to be generated (estimated)
+    total_est_gen = 25000  # total relation examples to be generated (estimated)
     generation_counts = relations_gen_count(total_est_gen, datasetname)  # calculate number of examples to be generated per relation type
     relation_totals = {k: 0 for k in generation_counts}
     total_gen = sum(generation_counts.values())
