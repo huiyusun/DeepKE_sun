@@ -342,7 +342,7 @@ def generate_skewed_and_merge(orig_path, gen_path, tot_orig, tot_gen):
     generate_skewed_dataset([gen_path], total_gen=tot_gen)
 
     # Construct the skewed file paths
-    orig_path_skewed = orig_path.replace('.json', f'_{tot_gen}.json')
+    orig_path_skewed = orig_path.replace('.json', f'_{tot_orig}.json')
     gen_path_skewed = gen_path.replace('.json', f'_{tot_gen}.json')
 
     # Merge both skewed datasets
@@ -352,8 +352,8 @@ def generate_skewed_and_merge(orig_path, gen_path, tot_orig, tot_gen):
 if __name__ == '__main__':
     # DA file paths
     gen_path = "./generated/tacred/train_gpt4omini_0603_10000.json"  # TACRED, TACREV, or Re-TACRED dataset format
-    tac_dir = "/Users/huiyu/Documents/pycharmProjects2025/RE_improved_baseline_sun/data/tacred/skewed/"
-    gen_dir = "/Users/huiyu/Documents/pycharmProjects2025/RE_improved_baseline_sun/data/tacred/skewed/subsamples/"
+    tac_dir = "/Users/huiyu/Documents/pycharmProjects2025/RE_improved_baseline_sun/data/tacred/"
+    gen_dir = "/Users/huiyu/Documents/pycharmProjects2025/RE_improved_baseline_sun/data/tacred/skewed/"
     tac_path = tac_dir + "train.json"
     gpt4o, gpt45preview, gpt41, gpt4o0806, gpt4omini, o4mini, o3mini, gpt41mini, gpt41nano = (
         "./tacred/skewed/train_gpt4o_multi_1000.json", "./tacred/skewed/train_gpt45preview_multi_1000.json", "to be generated",
@@ -364,7 +364,7 @@ if __name__ == '__main__':
     # convert_generated_to_tac(gen_path, "gpt-4o-mini-2024-07-18", dist="skewed")  # remenber to change model id for differet models
     # merge_datasets([tac_dir + "train_0629_25001_1.json", tac_dir + "train_0627_25001.json", tac_dir + "train_0626_25001.json"], limit=None)
     # generate_skewed_dataset([tac_dir + "train_0626_25001_merged_75003.json"], total_gen=68124)
-    generate_skewed_and_merge(tac_dir + "train.json", gen_dir + "train_0614_68124.json", 300, 700)
+    generate_skewed_and_merge(tac_dir + "train.json", gen_dir + "train_0702_68124.json", 61312, 6812)
     # count_relation_stats(gen_path, sort_by_count=True, sample_num=None, sample_method="seq", out_file="./generated/relation_stats.json")  # count stats of the dataset
     # relations_gen_count(15000, "tacred")
     # plot("./generated/relation_stats.json")  # plot relation frequencies
