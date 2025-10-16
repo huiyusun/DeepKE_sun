@@ -31,7 +31,7 @@ def best_fuzzy_span(tokens, target_tokens, threshold=0.8):
         scores = []
         for t1, t2 in zip(window, target_tokens):
             t1_lower, t2_lower = t1.lower(), t2.lower()  # case insensitive matching
-            if t1_lower.isdigit() and t2_lower.startswith(t1_lower):  # matches digits, e.g. 82 matches 82nd
+            if t1_lower.isdigit() and t2_lower.startswith(t1_lower):  # matches digits, e.g. 82 = 82nd
                 scores.append(1.0)
             elif t2_lower.isdigit() and t1_lower.startswith(t2_lower):
                 scores.append(1.0)
